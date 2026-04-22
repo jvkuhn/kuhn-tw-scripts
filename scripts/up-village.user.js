@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🏰 Up Village TW
 // @namespace    https://github.com/jvkuhn/kuhn-tw-scripts
-// @version      1.3.0
+// @version      1.3.1
 // @description  Automação de evolução de aldeia + recording mode (sniffer de rede) + uso de funções nativas do TW
 // @author       jvkuhn
 // @include      https://*.tribalwars.com.br/*
@@ -21,7 +21,7 @@ console.log('[🏰 UpVillage] Script carregando...');
     'use strict';
 
     const SCRIPT_ID = 'kuhn-village';
-    const SCRIPT_VERSION = '1.3.0';
+    const SCRIPT_VERSION = '1.3.1';
 
     // Flags globais — atualizadas ao ler/salvar config
     let debugEnabled = false;
@@ -120,10 +120,19 @@ console.log('[🏰 UpVillage] Script carregando...');
         s.remove();
     }
 
+    // Contador global de eventos sniff (mostrado no botão pra confirmar funcionamento)
+    let snifEventsTotal = 0;
+    let snifEventsProcessed = 0;
+
     // Listener no sandbox: recebe eventos do sniffer via postMessage
     window.addEventListener('message', (e) => {
         if (!e.data || e.data.tag !== 'KUHN_SNIFF') return;
-        if (!recordingEnabled) return; // só processa se gravação tá ON
+        snifEventsTotal++;
+        // Sempre loga no console pra confirmar que o postMessage tá fluindo
+        console.log('[🏰 UpVillage] postMessage SNIFF recebido. recordingEnabled =', recordingEnabled, 'payload:', e.data.payload);
+        if (!recordingEnabled) return;
+        snifEventsProcessed++;
+        updateButton();
         const p = e.data.payload;
         if (!p) return;
         const u = (p.url || '').replace(/^https?:\/\/[^/]+/, '');
@@ -742,7 +751,8 @@ console.log('[🏰 UpVillage] Script carregando...');
         const btn = document.getElementById(`${SCRIPT_ID}-btn`);
         if (!btn) return;
         const cfg = getConfig();
-        btn.textContent = cfg.enabled ? '🏰 ON' : '🏰 OFF';
+        const recBadge = recordingEnabled ? ` 🎬${snifEventsProcessed}` : '';
+        btn.textContent = (cfg.enabled ? '🏰 ON' : '🏰 OFF') + recBadge;
         btn.style.background = cfg.enabled ? '#2a8a2a' : '#666';
     }
 
