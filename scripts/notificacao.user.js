@@ -117,13 +117,55 @@
         `;
     }
 
+    function populateModalFromConfig() {
+        const cfg = getConfig();
+        document.getElementById(`${SCRIPT_ID}-discord-url`).value = cfg.discordWebhookUrl || '';
+        document.getElementById(`${SCRIPT_ID}-tg-token`).value = cfg.telegramBotToken || '';
+        document.getElementById(`${SCRIPT_ID}-tg-chatid`).value = cfg.telegramChatId || '';
+        document.getElementById(`${SCRIPT_ID}-evt-ataque`).checked = !!cfg.events.ataqueChegando;
+        document.getElementById(`${SCRIPT_ID}-evt-captcha`).checked = !!cfg.events.captcha;
+        document.getElementById(`${SCRIPT_ID}-interval`).value = cfg.intervalSec || 30;
+        updateStatusBadges(cfg);
+    }
+
+    function updateStatusBadges(cfg) {
+        const dEl = document.getElementById(`${SCRIPT_ID}-status-discord`);
+        const tEl = document.getElementById(`${SCRIPT_ID}-status-telegram`);
+        if (dEl) dEl.textContent = `Discord: ${isDiscordConfigured(cfg) ? '✅' : '❌'}`;
+        if (tEl) tEl.textContent = `Telegram: ${isTelegramConfigured(cfg) ? '✅' : '❌'}`;
+    }
+
+    function readModalToConfig() {
+        const interval = parseInt(document.getElementById(`${SCRIPT_ID}-interval`).value, 10) || 30;
+        return {
+            discordWebhookUrl: document.getElementById(`${SCRIPT_ID}-discord-url`).value.trim(),
+            telegramBotToken: document.getElementById(`${SCRIPT_ID}-tg-token`).value.trim(),
+            telegramChatId: document.getElementById(`${SCRIPT_ID}-tg-chatid`).value.trim(),
+            intervalSec: Math.max(10, interval),
+            events: {
+                ataqueChegando: document.getElementById(`${SCRIPT_ID}-evt-ataque`).checked,
+                captcha: document.getElementById(`${SCRIPT_ID}-evt-captcha`).checked,
+            },
+        };
+    }
+
     function openModal() {
         if (document.getElementById(`${SCRIPT_ID}-overlay`)) return;
         document.body.insertAdjacentHTML('beforeend', buildModalHtml());
+        populateModalFromConfig();
+
         document.getElementById(`${SCRIPT_ID}-cancel`).addEventListener('click', closeModal);
         document.getElementById(`${SCRIPT_ID}-overlay`).addEventListener('click', (e) => {
             if (e.target.id === `${SCRIPT_ID}-overlay`) closeModal();
         });
+        document.getElementById(`${SCRIPT_ID}-save`).addEventListener('click', () => {
+            const newCfg = readModalToConfig();
+            setConfig(newCfg);
+            updateStatusBadges(newCfg);
+            alert('Configuração salva.');
+            closeModal();
+        });
+
         log('Modal aberto.');
     }
 
