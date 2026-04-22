@@ -302,10 +302,48 @@
         log('Modal fechado.');
     }
 
+    const ATAQUE_LAST_KEY = 'kuhn-notif-ataque-last';
+
+    function getCurrentIncomingsCount() {
+        if (typeof game_data !== 'undefined' && game_data.player && game_data.player.incomings != null) {
+            return parseInt(game_data.player.incomings, 10) || 0;
+        }
+        const el = document.querySelector('#incomings_amount, .incoming_amount');
+        if (el) {
+            const m = el.textContent.match(/\d+/);
+            if (m) return parseInt(m[0], 10);
+        }
+        return null;
+    }
+
+    function checkAtaqueChegando() {
+        const cfg = getConfig();
+        if (!cfg.events.ataqueChegando) return;
+
+        const current = getCurrentIncomingsCount();
+        if (current === null) {
+            log('Não foi possível ler incomings (game_data e DOM falharam).');
+            return;
+        }
+
+        const last = parseInt(GM_getValue(ATAQUE_LAST_KEY, '0'), 10) || 0;
+        GM_setValue(ATAQUE_LAST_KEY, String(current));
+
+        if (current > last) {
+            const novos = current - last;
+            const msg = `Você tem ${current} ataque${current > 1 ? 's' : ''} chegando${novos > 1 ? ` (+${novos} novo${novos > 1 ? 's' : ''})` : ''}.`;
+            notify('⚔️ Ataque chegando', msg, 'ataque', `count-${current}-at-${Date.now()}`);
+        }
+    }
+
     let loopHandle = null;
 
     function loopTick() {
-        log('Tick — (detectores entram nas próximas tasks)');
+        try {
+            checkAtaqueChegando();
+        } catch (e) {
+            log('Erro no tick:', e);
+        }
     }
 
     function startLoop() {
