@@ -1,13 +1,15 @@
 // ==UserScript==
 // @name         🏰 Up Village TW
 // @namespace    https://github.com/jvkuhn/kuhn-tw-scripts
-// @version      1.0.0
-// @description  Automação de evolução de aldeia em background — quest claim, construtor (sem precisar de Premium AM)
+// @version      1.1.0
+// @description  Automação de evolução de aldeia em background — quest claim, construtor (sem precisar de Premium AM) + debug pro Discord
 // @author       jvkuhn
 // @include      https://*.tribalwars.com.br/*
 // @include      **game*
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @grant        GM_xmlhttpRequest
+// @connect      discord.com
 // @run-at       document-idle
 // @downloadURL  https://raw.githubusercontent.com/jvkuhn/kuhn-tw-scripts/main/scripts/up-village.user.js
 // @updateURL    https://raw.githubusercontent.com/jvkuhn/kuhn-tw-scripts/main/scripts/up-village.user.js
@@ -18,8 +20,79 @@ console.log('[🏰 UpVillage] Script carregando...');
     'use strict';
 
     const SCRIPT_ID = 'kuhn-village';
-    const log = (...args) => console.log('[🏰 UpVillage]', ...args);
-    log('IIFE iniciada — versão 1.0.0');
+    const SCRIPT_VERSION = '1.1.0';
+
+    // log() wrappa console.log + push pro buffer Discord (se debug ON)
+    const log = (...args) => {
+        console.log('[🏰 UpVillage]', ...args);
+        debugPush('INFO', args);
+    };
+
+    // ---------------- Discord debug logger ----------------
+    const DEBUG_BUFFER = [];
+    const DEBUG_FLUSH_MS = 10000;
+    const DEBUG_MAX_BUFFER = 20;
+    const DEBUG_MAX_MSG_CHARS = 1800;
+
+    function getDiscordWebhook() {
+        // Compartilha webhook configurado no notificacao.user.js
+        const raw = GM_getValue('kuhn-notif-config', null);
+        if (!raw) return null;
+        try {
+            const cfg = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            return cfg.discordWebhookUrl || null;
+        } catch {
+            return null;
+        }
+    }
+
+    function debugPush(level, args) {
+        const cfg = getConfig();
+        if (!cfg.debug) return;
+        const ts = new Date().toLocaleTimeString();
+        const text = args.map(a => {
+            if (a instanceof Error) return a.message;
+            if (typeof a === 'object') {
+                try { return JSON.stringify(a); } catch { return String(a); }
+            }
+            return String(a);
+        }).join(' ');
+        DEBUG_BUFFER.push(`[${ts}] [${level}] ${text}`);
+        if (DEBUG_BUFFER.length >= DEBUG_MAX_BUFFER) flushDebug();
+    }
+
+    function flushDebug() {
+        if (DEBUG_BUFFER.length === 0) return;
+        const webhook = getDiscordWebhook();
+        if (!webhook) {
+            DEBUG_BUFFER.length = 0; // descarta se sem webhook
+            return;
+        }
+
+        const village = (typeof game_data !== 'undefined' && game_data.village) ? game_data.village.coord : '?';
+        const player = (typeof game_data !== 'undefined' && game_data.player) ? game_data.player.name : '?';
+        const header = `🏰 UpVillage v${SCRIPT_VERSION} [${player} / ${village}]`;
+        let body = DEBUG_BUFFER.splice(0).join('\n');
+        const wrap = `\`\`\`\n${header}\n${body}\n\`\`\``;
+        const content = wrap.length > DEBUG_MAX_MSG_CHARS
+            ? wrap.slice(0, DEBUG_MAX_MSG_CHARS) + '\n...(truncado)```'
+            : wrap;
+
+        try {
+            GM_xmlhttpRequest({
+                method: 'POST',
+                url: webhook,
+                headers: { 'Content-Type': 'application/json' },
+                data: JSON.stringify({ content }),
+                onerror: () => { /* silencioso, evita loop */ },
+            });
+        } catch {}
+    }
+
+    setInterval(flushDebug, DEBUG_FLUSH_MS);
+    // ---------------- /Discord debug ----------------
+
+    log(`IIFE iniciada — versão ${SCRIPT_VERSION}`);
 
     const STORAGE_KEY = 'kuhn-village-config';
     const QUEUE_STATE_KEY = 'kuhn-village-queue-state';
@@ -31,6 +104,7 @@ console.log('[🏰 UpVillage] Script carregando...');
     function getDefaultConfig() {
         return {
             enabled: false,
+            debug: false,
             modules: {
                 quest: true,
                 construtor: false,
@@ -272,6 +346,10 @@ console.log('[🏰 UpVillage] Script carregando...');
                         <label style="font-size:16px;">
                             <input type="checkbox" id="${SCRIPT_ID}-enabled" style="transform:scale(1.4);margin-right:8px;">
                             Ligar automação
+                        </label><br>
+                        <label style="margin-top:6px;display:inline-block;">
+                            <input type="checkbox" id="${SCRIPT_ID}-debug" style="margin-right:6px;">
+                            🐛 Enviar logs pro Discord (usa o webhook do notificacao)
                         </label>
                     </fieldset>
 
@@ -307,6 +385,7 @@ console.log('[🏰 UpVillage] Script carregando...');
     function populateHud() {
         const cfg = getConfig();
         document.getElementById(`${SCRIPT_ID}-enabled`).checked = !!cfg.enabled;
+        document.getElementById(`${SCRIPT_ID}-debug`).checked = !!cfg.debug;
         document.getElementById(`${SCRIPT_ID}-mod-quest`).checked = !!cfg.modules.quest;
         document.getElementById(`${SCRIPT_ID}-mod-construtor`).checked = !!cfg.modules.construtor;
         document.getElementById(`${SCRIPT_ID}-plan`).value = cfg.buildPlan || '';
@@ -316,6 +395,7 @@ console.log('[🏰 UpVillage] Script carregando...');
     function readHud() {
         return {
             enabled: document.getElementById(`${SCRIPT_ID}-enabled`).checked,
+            debug: document.getElementById(`${SCRIPT_ID}-debug`).checked,
             modules: {
                 quest: document.getElementById(`${SCRIPT_ID}-mod-quest`).checked,
                 construtor: document.getElementById(`${SCRIPT_ID}-mod-construtor`).checked,
