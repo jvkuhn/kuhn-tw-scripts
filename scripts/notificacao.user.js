@@ -61,6 +61,78 @@
         return Boolean(cfg.telegramBotToken && cfg.telegramChatId);
     }
 
+    function buildModalHtml() {
+        return `
+            <div id="${SCRIPT_ID}-overlay" style="
+                position:fixed;top:0;left:0;width:100%;height:100%;
+                background:rgba(0,0,0,0.6);z-index:99998;display:flex;
+                align-items:center;justify-content:center;">
+                <div style="
+                    background:#f4e4bc;border:2px solid #603000;border-radius:6px;
+                    padding:20px;width:480px;max-width:90vw;max-height:85vh;
+                    overflow:auto;font-family:Verdana,sans-serif;color:#000;">
+                    <h3 style="margin:0 0 12px 0;color:#603000;">🔔 Configuração de Notificações</h3>
+
+                    <div style="margin-bottom:8px;">
+                        <strong>Status:</strong>
+                        <span id="${SCRIPT_ID}-status-discord">Discord: ❌</span> |
+                        <span id="${SCRIPT_ID}-status-telegram">Telegram: ❌</span>
+                    </div>
+
+                    <fieldset style="margin-bottom:10px;border:1px solid #999;padding:8px;">
+                        <legend>Discord</legend>
+                        <label style="display:block;margin-bottom:4px;">Webhook URL:</label>
+                        <input type="text" id="${SCRIPT_ID}-discord-url" style="width:100%;padding:4px;" placeholder="https://discord.com/api/webhooks/...">
+                        <button id="${SCRIPT_ID}-test-discord" style="margin-top:6px;">Testar Discord</button>
+                    </fieldset>
+
+                    <fieldset style="margin-bottom:10px;border:1px solid #999;padding:8px;">
+                        <legend>Telegram</legend>
+                        <label style="display:block;margin-bottom:4px;">Token do Bot:</label>
+                        <input type="text" id="${SCRIPT_ID}-tg-token" style="width:100%;padding:4px;" placeholder="123456:ABC-DEF...">
+                        <label style="display:block;margin:6px 0 4px 0;">Chat ID:</label>
+                        <input type="text" id="${SCRIPT_ID}-tg-chatid" style="width:100%;padding:4px;" placeholder="123456789">
+                        <button id="${SCRIPT_ID}-test-telegram" style="margin-top:6px;">Testar Telegram</button>
+                    </fieldset>
+
+                    <fieldset style="margin-bottom:10px;border:1px solid #999;padding:8px;">
+                        <legend>Eventos</legend>
+                        <label><input type="checkbox" id="${SCRIPT_ID}-evt-ataque"> Ataque chegando</label><br>
+                        <label><input type="checkbox" id="${SCRIPT_ID}-evt-captcha"> Captcha apareceu</label>
+                    </fieldset>
+
+                    <fieldset style="margin-bottom:10px;border:1px solid #999;padding:8px;">
+                        <legend>Avançado</legend>
+                        <label>Intervalo de verificação (segundos, mín 10):
+                            <input type="number" id="${SCRIPT_ID}-interval" min="10" style="width:80px;">
+                        </label>
+                    </fieldset>
+
+                    <div style="text-align:right;">
+                        <button id="${SCRIPT_ID}-cancel">Cancelar</button>
+                        <button id="${SCRIPT_ID}-save" style="margin-left:8px;">Salvar</button>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    function openModal() {
+        if (document.getElementById(`${SCRIPT_ID}-overlay`)) return;
+        document.body.insertAdjacentHTML('beforeend', buildModalHtml());
+        document.getElementById(`${SCRIPT_ID}-cancel`).addEventListener('click', closeModal);
+        document.getElementById(`${SCRIPT_ID}-overlay`).addEventListener('click', (e) => {
+            if (e.target.id === `${SCRIPT_ID}-overlay`) closeModal();
+        });
+        log('Modal aberto.');
+    }
+
+    function closeModal() {
+        const overlay = document.getElementById(`${SCRIPT_ID}-overlay`);
+        if (overlay) overlay.remove();
+        log('Modal fechado.');
+    }
+
     function injectButton() {
         if (document.getElementById(`${SCRIPT_ID}-btn`)) return;
 
@@ -82,10 +154,7 @@
             border: '1px solid #2c1810',
             userSelect: 'none',
         });
-        btn.addEventListener('click', () => {
-            log('Botão clicado — modal ainda não implementado.');
-            alert('Modal de configuração será implementado na próxima task.');
-        });
+        btn.addEventListener('click', openModal);
         document.body.appendChild(btn);
         log('Botão injetado.');
     }
