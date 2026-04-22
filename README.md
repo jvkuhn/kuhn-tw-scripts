@@ -11,7 +11,7 @@ Userscripts open-source para Tribal Wars (servidores BR), feitos para Tampermonk
 
 | Script | Descrição | Instalar |
 |---|---|---|
-| 🔔 Notificação | Envia alertas Discord/Telegram quando há ataques chegando ou captcha | _em desenvolvimento_ |
+| 🔔 [Notificação](docs/notificacao.md) | Envia alertas Discord/Telegram para ataques chegando e captcha | [Instalar](https://raw.githubusercontent.com/jvkuhn/kuhn-tw-scripts/main/scripts/notificacao.user.js) |
 
 ## Instalação
 

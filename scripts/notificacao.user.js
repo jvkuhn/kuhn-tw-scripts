@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🔔 Notificação TW
 // @namespace    https://github.com/jvkuhn/kuhn-tw-scripts
-// @version      0.1.0
+// @version      1.0.0
 // @description  Envia alertas Discord/Telegram para ataques chegando e captcha no Tribal Wars BR
 // @author       jvkuhn
 // @match        https://*.tribalwars.com.br/game.php*
