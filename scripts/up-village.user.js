@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🏰 Up Village TW
 // @namespace    https://github.com/jvkuhn/kuhn-tw-scripts
-// @version      1.3.1
+// @version      1.3.2
 // @description  Automação de evolução de aldeia + recording mode (sniffer de rede) + uso de funções nativas do TW
 // @author       jvkuhn
 // @include      https://*.tribalwars.com.br/*
@@ -21,7 +21,7 @@ console.log('[🏰 UpVillage] Script carregando...');
     'use strict';
 
     const SCRIPT_ID = 'kuhn-village';
-    const SCRIPT_VERSION = '1.3.1';
+    const SCRIPT_VERSION = '1.3.2';
 
     // Flags globais — atualizadas ao ler/salvar config
     let debugEnabled = false;
@@ -32,120 +32,108 @@ console.log('[🏰 UpVillage] Script carregando...');
     const SNIFF_FLAG = '__kuhnSnifferInjected_v3';
 
     // =====================================================================
-    // SNIFFER DE REDE (recording mode)
-    // Injeta override de fetch + XMLHttpRequest no contexto da página.
-    // Comunica com o sandbox via window.postMessage.
-    // Ativa só quando recordingEnabled = true.
+    // SNIFFER DE REDE (recording mode) — v1.3.2
+    // Override DIRETO via unsafeWindow (sem injetar <script>, evita CSP).
+    // Diretamente atribui callbacks que o sandbox processa.
     // =====================================================================
-    function injectSniffer() {
-        if (window[SNIFF_FLAG]) return;
-        window[SNIFF_FLAG] = true;
-        const code = `
-            (function() {
-                if (window.${SNIFF_FLAG}_loaded) return;
-                window.${SNIFF_FLAG}_loaded = true;
-                const TAG = 'KUHN_SNIFF';
+    function installSniffer() {
+        const W = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
+        if (W.__kuhnSnifferLoaded) {
+            console.log('[🏰 UpVillage] Sniffer já estava instalado (skip).');
+            return;
+        }
+        W.__kuhnSnifferLoaded = true;
 
-                function post(payload) {
-                    window.postMessage({ tag: TAG, payload }, '*');
-                }
-                function trim(s, n) { return s ? String(s).slice(0, n) : ''; }
-                function isGame(url) {
-                    return typeof url === 'string' && url.includes('game.php');
-                }
+        function trim(s, n) { return s ? String(s).slice(0, n) : ''; }
+        function isGame(url) { return typeof url === 'string' && url.includes('game.php'); }
 
-                const origFetch = window.fetch;
-                window.fetch = function(input, init) {
-                    const url = typeof input === 'string' ? input : (input && input.url) || '';
-                    const method = (init && init.method) || (input && input.method) || 'GET';
-                    const body = trim(init && init.body, 500);
-                    if (!isGame(url)) return origFetch.apply(this, arguments);
+        // Callback chamado pelo override — roda no contexto onde foi atribuído (sandbox)
+        W.__kuhnSniffPush = function (payload) {
+            try {
+                snifEventsTotal++;
+                console.log('[🏰 UpVillage] sniff capturado. recordingEnabled =', recordingEnabled, 'payload:', payload);
+                if (!recordingEnabled) return;
+                snifEventsProcessed++;
+                updateButton();
+                const u = (payload.url || '').replace(/^https?:\/\/[^/]+/, '');
+                log(`📡 ${payload.kind.toUpperCase()} ${payload.method} ${u} → ${payload.status || '?'}`);
+                if (payload.body) log(`   body: ${payload.body}`);
+                if (payload.response) log(`   resp: ${payload.response}`);
+            } catch (e) {
+                console.error('[🏰 UpVillage] sniff push erro:', e);
+            }
+        };
+
+        try {
+            const origFetch = W.fetch;
+            W.fetch = function (input, init) {
+                const url = typeof input === 'string' ? input : (input && input.url) || '';
+                const method = (init && init.method) || (input && input.method) || 'GET';
+                const body = trim(init && init.body, 500);
+                if (!isGame(url)) return origFetch.apply(this, arguments);
+                const t0 = Date.now();
+                const promise = origFetch.apply(this, arguments);
+                promise.then(res => {
+                    res.clone().text().then(text => {
+                        W.__kuhnSniffPush({
+                            kind: 'fetch', t: t0, method,
+                            url: trim(url, 300), body,
+                            status: res.status,
+                            response: trim(text, 500),
+                        });
+                    }).catch(() => {});
+                }).catch(err => {
+                    W.__kuhnSniffPush({ kind: 'fetch-error', t: t0, method, url: trim(url, 300), error: String(err) });
+                });
+                return promise;
+            };
+            console.log('[🏰 UpVillage] Sniffer fetch instalado via unsafeWindow.');
+        } catch (e) {
+            console.error('[🏰 UpVillage] Override fetch falhou:', e);
+        }
+
+        try {
+            const XHR = W.XMLHttpRequest;
+            const origOpen = XHR.prototype.open;
+            const origSend = XHR.prototype.send;
+            XHR.prototype.open = function (method, url) {
+                this.__kuhnUrl = url;
+                this.__kuhnMethod = method;
+                return origOpen.apply(this, arguments);
+            };
+            XHR.prototype.send = function (body) {
+                if (isGame(this.__kuhnUrl)) {
                     const t0 = Date.now();
-                    const promise = origFetch.apply(this, arguments);
-                    promise.then(res => {
-                        res.clone().text().then(text => {
-                            post({
-                                kind: 'fetch',
-                                t: t0,
-                                method,
-                                url: trim(url, 300),
-                                body,
-                                status: res.status,
-                                response: trim(text, 500),
-                            });
-                        }).catch(()=>{});
-                    }).catch(err => {
-                        post({ kind: 'fetch-error', t: t0, method, url: trim(url, 300), error: String(err) });
+                    const url = this.__kuhnUrl;
+                    const method = this.__kuhnMethod;
+                    const sentBody = trim(body, 500);
+                    const xhr = this;
+                    this.addEventListener('load', () => {
+                        W.__kuhnSniffPush({
+                            kind: 'xhr', t: t0, method,
+                            url: trim(url, 300), body: sentBody,
+                            status: xhr.status,
+                            response: trim(xhr.responseText || '', 500),
+                        });
                     });
-                    return promise;
-                };
-
-                const origOpen = XMLHttpRequest.prototype.open;
-                const origSend = XMLHttpRequest.prototype.send;
-                XMLHttpRequest.prototype.open = function(method, url) {
-                    this.__kuhnUrl = url;
-                    this.__kuhnMethod = method;
-                    return origOpen.apply(this, arguments);
-                };
-                XMLHttpRequest.prototype.send = function(body) {
-                    if (isGame(this.__kuhnUrl)) {
-                        const t0 = Date.now();
-                        const url = this.__kuhnUrl;
-                        const method = this.__kuhnMethod;
-                        const sentBody = trim(body, 500);
-                        this.addEventListener('load', () => {
-                            post({
-                                kind: 'xhr',
-                                t: t0,
-                                method,
-                                url: trim(url, 300),
-                                body: sentBody,
-                                status: this.status,
-                                response: trim(this.responseText || '', 500),
-                            });
-                        });
-                        this.addEventListener('error', () => {
-                            post({ kind: 'xhr-error', t: t0, method, url: trim(url, 300) });
-                        });
-                    }
-                    return origSend.apply(this, arguments);
-                };
-
-                console.log('[KUHN-SNIFF] Sniffer instalado em fetch + XMLHttpRequest.');
-            })();
-        `;
-        const s = document.createElement('script');
-        s.textContent = code;
-        (document.head || document.documentElement).appendChild(s);
-        s.remove();
+                    this.addEventListener('error', () => {
+                        W.__kuhnSniffPush({ kind: 'xhr-error', t: t0, method, url: trim(url, 300) });
+                    });
+                }
+                return origSend.apply(this, arguments);
+            };
+            console.log('[🏰 UpVillage] Sniffer XHR instalado via unsafeWindow.');
+        } catch (e) {
+            console.error('[🏰 UpVillage] Override XHR falhou:', e);
+        }
     }
 
     // Contador global de eventos sniff (mostrado no botão pra confirmar funcionamento)
     let snifEventsTotal = 0;
     let snifEventsProcessed = 0;
 
-    // Listener no sandbox: recebe eventos do sniffer via postMessage
-    window.addEventListener('message', (e) => {
-        if (!e.data || e.data.tag !== 'KUHN_SNIFF') return;
-        snifEventsTotal++;
-        // Sempre loga no console pra confirmar que o postMessage tá fluindo
-        console.log('[🏰 UpVillage] postMessage SNIFF recebido. recordingEnabled =', recordingEnabled, 'payload:', e.data.payload);
-        if (!recordingEnabled) return;
-        snifEventsProcessed++;
-        updateButton();
-        const p = e.data.payload;
-        if (!p) return;
-        const u = (p.url || '').replace(/^https?:\/\/[^/]+/, '');
-        const summary = `${p.kind.toUpperCase()} ${p.method} ${u} → ${p.status || '?'}`;
-        log(`📡 ${summary}`);
-        if (p.body) log(`   body: ${p.body}`);
-        if (p.response) log(`   resp: ${p.response}`);
-        if (p.error) log(`   err:  ${p.error}`);
-    });
-
-    // Injeta sniffer SEMPRE (no @run-at document-start), mas só processa se recording ON.
-    // Custo de ter o sniffer instalado sem processar = ~zero.
-    try { injectSniffer(); } catch (e) { console.error('[🏰 UpVillage] injectSniffer falhou:', e); }
+    // Instala sniffer via unsafeWindow (sem injetar <script>, evita CSP)
+    try { installSniffer(); } catch (e) { console.error('[🏰 UpVillage] installSniffer falhou:', e); }
     // =====================================================================
 
     // Mover ALIASES pra cá (era declarado depois — causava TDZ na migração de config antiga)
