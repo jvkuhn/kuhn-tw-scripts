@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🏰 Up Village TW
 // @namespace    https://github.com/jvkuhn/kuhn-tw-scripts
-// @version      1.3.4
+// @version      1.3.5
 // @description  Automação de evolução de aldeia + recording mode (sniffer de rede) + uso de funções nativas do TW
 // @author       jvkuhn
 // @include      https://*.tribalwars.com.br/*
@@ -21,7 +21,7 @@ console.log('[🏰 UpVillage] Script carregando...');
     'use strict';
 
     const SCRIPT_ID = 'kuhn-village';
-    const SCRIPT_VERSION = '1.3.4';
+    const SCRIPT_VERSION = '1.3.5';
 
     // Flags globais — atualizadas ao ler/salvar config
     let debugEnabled = false;
@@ -265,9 +265,11 @@ console.log('[🏰 UpVillage] Script carregando...');
         if (DEBUG_BUFFER.length === 0) return;
         const webhook = getDiscordWebhook();
         if (!webhook) {
+            console.warn(`[🏰 UpVillage] flushDebug: ${DEBUG_BUFFER.length} mensagens descartadas — webhook não configurado. Cole no painel do 🏰 → "Discord Webhook URL".`);
             DEBUG_BUFFER.length = 0;
             return;
         }
+        console.log(`[🏰 UpVillage] flushDebug: enviando ${DEBUG_BUFFER.length} mensagens pro Discord...`);
         const village = (typeof game_data !== 'undefined' && game_data.village) ? game_data.village.coord : '?';
         const player = (typeof game_data !== 'undefined' && game_data.player) ? game_data.player.name : '?';
         const header = `🏰 UpVillage v${SCRIPT_VERSION} [${player} / ${village}]`;
@@ -786,16 +788,23 @@ console.log('[🏰 UpVillage] Script carregando...');
                 alert('URL inválida. Deve começar com https://discord.com/api/webhooks/');
                 return;
             }
+            // IMPORTANTE: persiste na hora, não espera usuário clicar Salvar
+            try { localStorage.setItem('kuhn_tw_shared_webhook', url); } catch {}
+            try {
+                const cfg = getConfig();
+                cfg.discordWebhookUrl = url;
+                setConfig(cfg);
+            } catch {}
             try {
                 GM_xmlhttpRequest({
                     method: 'POST',
                     url,
                     headers: { 'Content-Type': 'application/json' },
                     data: JSON.stringify({
-                        content: `✅ Teste do webhook UpVillage v${SCRIPT_VERSION} — ${new Date().toLocaleString()}`
+                        content: `✅ Teste do webhook UpVillage v${SCRIPT_VERSION} — ${new Date().toLocaleString()}\n(webhook persistido em localStorage + GM_setValue)`
                     }),
                     onload: (res) => {
-                        if (res.status >= 200 && res.status < 300) alert('Enviado! Confere o canal do Discord.');
+                        if (res.status >= 200 && res.status < 300) alert('Enviado + salvo. Pode fechar e as notificações do recording vão chegar.');
                         else alert(`Falhou: HTTP ${res.status}\n${res.responseText.slice(0, 200)}`);
                     },
                     onerror: () => alert('Erro de rede ao testar webhook.'),
