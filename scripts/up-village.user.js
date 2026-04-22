@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🏰 Up Village TW
 // @namespace    https://github.com/jvkuhn/kuhn-tw-scripts
-// @version      1.1.0
+// @version      1.1.1
 // @description  Automação de evolução de aldeia em background — quest claim, construtor (sem precisar de Premium AM) + debug pro Discord
 // @author       jvkuhn
 // @include      https://*.tribalwars.com.br/*
@@ -20,7 +20,13 @@ console.log('[🏰 UpVillage] Script carregando...');
     'use strict';
 
     const SCRIPT_ID = 'kuhn-village';
-    const SCRIPT_VERSION = '1.1.0';
+    const SCRIPT_VERSION = '1.1.1';
+
+    // Constantes precisam estar declaradas ANTES de qualquer chamada que dependa delas
+    // (Temporal Dead Zone — referenciar `const` antes da declaração crasha o IIFE inteiro)
+    const STORAGE_KEY = 'kuhn-village-config';
+    const QUEUE_STATE_KEY = 'kuhn-village-queue-state';
+    const TICK_MS = 8000;
 
     // log() wrappa console.log + push pro buffer Discord (se debug ON)
     const log = (...args) => {
@@ -93,10 +99,6 @@ console.log('[🏰 UpVillage] Script carregando...');
     // ---------------- /Discord debug ----------------
 
     log(`IIFE iniciada — versão ${SCRIPT_VERSION}`);
-
-    const STORAGE_KEY = 'kuhn-village-config';
-    const QUEUE_STATE_KEY = 'kuhn-village-queue-state';
-    const TICK_MS = 8000; // 8s entre ticks (não agressivo)
 
     // =====================================================================
     // CONFIG

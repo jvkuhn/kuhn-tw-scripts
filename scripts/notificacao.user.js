@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🔔 Notificação TW
 // @namespace    https://github.com/jvkuhn/kuhn-tw-scripts
-// @version      1.1.0
+// @version      1.1.1
 // @description  Envia alertas Discord/Telegram para ataques chegando e captcha no Tribal Wars BR
 // @author       jvkuhn
 // @include      https://*.tribalwars.com.br/*
@@ -22,7 +22,7 @@ console.log('[🔔 Notif] Script carregando...');
 
     const SCRIPT_ID = 'kuhn-notif';
     const log = (...args) => console.log('[🔔 Notif]', ...args);
-    log('IIFE iniciada — versão 1.1.0');
+    log('IIFE iniciada — versão 1.1.1');
 
     const STORAGE_KEY = 'kuhn-notif-config';
 
@@ -360,7 +360,8 @@ console.log('[🔔 Notif] Script carregando...');
     function getCurrentMessagesCount() {
         if (typeof game_data !== 'undefined' && game_data.player) {
             const p = game_data.player;
-            const candidates = [p.new_messages, p.unread_messages, p.messages];
+            // Campo correto no TW BR: new_igm (Instant Game Message)
+            const candidates = [p.new_igm, p.new_messages, p.unread_messages, p.messages];
             for (const v of candidates) {
                 if (v != null) return parseInt(v, 10) || 0;
             }
