@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🏰 Up Village TW
 // @namespace    https://github.com/jvkuhn/kuhn-tw-scripts
-// @version      1.11.0
+// @version      1.12.0
 // @description  Automação de evolução de aldeia + recording mode (sniffer de rede) + uso de funções nativas do TW
 // @author       jvkuhn
 // @include      https://*.tribalwars.com.br/*
@@ -21,7 +21,7 @@ console.log('[🏰 UpVillage] Script carregando...');
     'use strict';
 
     const SCRIPT_ID = 'kuhn-village';
-    const SCRIPT_VERSION = '1.11.0';
+    const SCRIPT_VERSION = '1.12.0';
 
     // =====================================================================
     // BUILDING COSTS — fórmulas públicas TW BR (cost = base * factor^(N-1))
@@ -491,10 +491,15 @@ console.log('[🏰 UpVillage] Script carregando...');
                 recrutamento: false,
                 agendador: false,
                 assistenteSaque: false,
+                paladino: false,
+                cunharMoedas: false,
+                aceitarOfertas: false,
             },
-            // Assistente de Saque: template A ou B, máximo de ataques por tick
-            saqueTemplate: 'a', // 'a' ou 'b'
+            // Assistente de Saque
+            saqueTemplate: 'a',
             saqueMaxPorTick: 5,
+            // Mercado — só aceita ofertas com taxa <= esta (ex: 1.0 = paridade)
+            mercadoTaxaMaxima: 1.0,
             // Coleta: tropas a enviar por squad (1-4)
             coletaUnits: 'spear:10,sword:0,axe:0,archer:0,light:0,marcher:0,heavy:0',
             // Recrutamento: alvo de cada unidade (manter no mínimo X treinando)
@@ -885,6 +890,107 @@ console.log('[🏰 UpVillage] Script carregando...');
     }
 
     // =====================================================================
+    // MÓDULO 7: PALADINO — EXPERIMENTAL
+    // Auto-recruta paladino se ainda não existe na aldeia.
+    // Endpoint padrão TW: POST screen=statue&ajaxaction=new_knight
+    // =====================================================================
+    async function paladinoModule() {
+        const cfg = getConfig();
+        if (!cfg.modules.paladino) return;
+
+        // Verifica se já tem paladino na aldeia
+        const knightLvl = getCurrentLevel('statue');
+        if (knightLvl < 1) {
+            log('Paladino: sem estátua nesta aldeia (precisa upar pra nv 1 antes).');
+            return;
+        }
+        if (game_data.player.knight_location && parseInt(game_data.player.knight_location, 10) === parseInt(game_data.village.id, 10)) {
+            // Já tem paladino aqui
+            return;
+        }
+        if (game_data.player.knight_unit) {
+            log('Paladino: já existe (em outra aldeia). Skip.');
+            return;
+        }
+
+        const url = buildUrl('statue', { ajaxaction: 'new_knight' });
+        const params = new URLSearchParams({ h: game_data.csrf });
+        const r = await twFetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: params.toString(),
+        });
+        log('Paladino: tentativa de recrutar →', JSON.stringify(r).slice(0, 200));
+    }
+
+    // =====================================================================
+    // MÓDULO 8: CUNHAR MOEDAS (Academia) — EXPERIMENTAL
+    // Cunha moedas continuamente se tiver academia + recursos.
+    // Endpoint padrão: POST screen=snob&ajaxaction=coin_mint
+    // =====================================================================
+    async function cunharMoedasModule() {
+        const cfg = getConfig();
+        if (!cfg.modules.cunharMoedas) return;
+
+        const snobLvl = getCurrentLevel('snob');
+        if (snobLvl < 1) return; // sem academia
+
+        // Cada moeda custa: 28000 mad + 30000 arg + 25000 ferro + 2 pop (varia por mundo)
+        const v = game_data.village;
+        if (v.wood < 28000 || v.stone < 30000 || v.iron < 25000) return;
+
+        const url = buildUrl('snob', { ajaxaction: 'coin_mint' });
+        const params = new URLSearchParams({ h: game_data.csrf, count: '1' });
+        const r = await twFetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: params.toString(),
+        });
+        log('Moedas: cunhada →', JSON.stringify(r).slice(0, 150));
+    }
+
+    // =====================================================================
+    // MÓDULO 9: MERCADO — Auto aceitar ofertas — EXPERIMENTAL
+    // Vai em screen=market mode=other_offer, aceita ofertas com taxa boa.
+    // =====================================================================
+    async function mercadoModule() {
+        const cfg = getConfig();
+        if (!cfg.modules.aceitarOfertas) return;
+
+        if (getCurrentLevel('market') < 1) return; // sem mercado
+
+        // Lista ofertas
+        const html = await twFetch(buildUrl('market', { mode: 'other_offer' }));
+        if (typeof html !== 'string') return;
+
+        // Tenta extrair ofertas via regex (padrão típico: form com offer_id, oferece X de A por Y de B)
+        // Padrão de botão: onclick="market.acceptOffer(<id>, ...)" OU input[name=id]
+        const offers = [];
+        const re = /accept_offer.*?id=["']?(\d+)["']?/gi;
+        let m;
+        while ((m = re.exec(html)) !== null) {
+            offers.push({ id: m[1] });
+        }
+        if (offers.length === 0) {
+            log('Mercado: nenhuma oferta encontrada (padrão pode variar — capture via sniffer).');
+            return;
+        }
+
+        log(`Mercado: ${offers.length} oferta(s) encontradas, aceitando até 3...`);
+        for (const o of offers.slice(0, 3)) {
+            const url = buildUrl('market', { ajaxaction: 'other_offers_accept' });
+            const params = new URLSearchParams({ id: o.id, h: game_data.csrf });
+            const r = await twFetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: params.toString(),
+            });
+            log(`Mercado: oferta ${o.id} →`, JSON.stringify(r).slice(0, 100));
+            await new Promise(r2 => setTimeout(r2, 300));
+        }
+    }
+
+    // =====================================================================
     // MÓDULO 6: ASSISTENTE DE SAQUE (Farm Assistant) — EXPERIMENTAL
     // Vai em screen=am_farm, lista vilas bárbaras, dispara templates A/B.
     // Endpoint pattern conhecido: POST screen=am_farm com target+template_id+h.
@@ -1251,6 +1357,9 @@ console.log('[🏰 UpVillage] Script carregando...');
             await recrutamentoModule();
             await agendadorModule();
             await assistenteSaqueModule();
+            await paladinoModule();
+            await cunharMoedasModule();
+            await mercadoModule();
         } catch (e) {
             log('Erro no tick:', e);
         }
@@ -1301,7 +1410,10 @@ console.log('[🏰 UpVillage] Script carregando...');
                         <label><input type="checkbox" id="${SCRIPT_ID}-mod-coleta"> 🌾 Coleta de recursos <small style="color:#a00;">(experimental)</small></label><br>
                         <label><input type="checkbox" id="${SCRIPT_ID}-mod-recrutamento"> ⚔️ Recrutamento <small style="color:#a00;">(experimental)</small></label><br>
                         <label><input type="checkbox" id="${SCRIPT_ID}-mod-agendador"> 🗓️ Agendador de comandos <small style="color:#a00;">(experimental)</small></label><br>
-                        <label><input type="checkbox" id="${SCRIPT_ID}-mod-saque"> 💰 Assistente de Saque (am_farm) <small style="color:#a00;">(experimental)</small></label>
+                        <label><input type="checkbox" id="${SCRIPT_ID}-mod-saque"> 💰 Assistente de Saque (am_farm) <small style="color:#a00;">(experimental)</small></label><br>
+                        <label><input type="checkbox" id="${SCRIPT_ID}-mod-paladino"> 🛡️ Auto-recrutar Paladino <small style="color:#a00;">(exp)</small></label><br>
+                        <label><input type="checkbox" id="${SCRIPT_ID}-mod-moedas"> 👑 Cunhar moedas (Academia) <small style="color:#a00;">(exp)</small></label><br>
+                        <label><input type="checkbox" id="${SCRIPT_ID}-mod-ofertas"> 🛒 Aceitar ofertas Mercado <small style="color:#a00;">(exp)</small></label>
                     </fieldset>
 
                     <fieldset style="margin-bottom:10px;border:1px solid #999;padding:8px;">
@@ -1542,6 +1654,9 @@ console.log('[🏰 UpVillage] Script carregando...');
         document.getElementById(`${SCRIPT_ID}-mod-saque`).checked = !!cfg.modules.assistenteSaque;
         document.getElementById(`${SCRIPT_ID}-saque-template`).value = cfg.saqueTemplate || 'a';
         document.getElementById(`${SCRIPT_ID}-saque-max`).value = cfg.saqueMaxPorTick || 5;
+        document.getElementById(`${SCRIPT_ID}-mod-paladino`).checked = !!cfg.modules.paladino;
+        document.getElementById(`${SCRIPT_ID}-mod-moedas`).checked = !!cfg.modules.cunharMoedas;
+        document.getElementById(`${SCRIPT_ID}-mod-ofertas`).checked = !!cfg.modules.aceitarOfertas;
         document.getElementById(`${SCRIPT_ID}-coleta-units`).value = cfg.coletaUnits || '';
         document.getElementById(`${SCRIPT_ID}-recrut-targets`).value = cfg.recrutamentoTargets || '';
         renderScheduleList();
@@ -1569,6 +1684,9 @@ console.log('[🏰 UpVillage] Script carregando...');
                 recrutamento: document.getElementById(`${SCRIPT_ID}-mod-recrutamento`).checked,
                 agendador: document.getElementById(`${SCRIPT_ID}-mod-agendador`).checked,
                 assistenteSaque: document.getElementById(`${SCRIPT_ID}-mod-saque`).checked,
+                paladino: document.getElementById(`${SCRIPT_ID}-mod-paladino`).checked,
+                cunharMoedas: document.getElementById(`${SCRIPT_ID}-mod-moedas`).checked,
+                aceitarOfertas: document.getElementById(`${SCRIPT_ID}-mod-ofertas`).checked,
             },
             saqueTemplate: document.getElementById(`${SCRIPT_ID}-saque-template`).value || 'a',
             saqueMaxPorTick: Math.max(1, Math.min(50, parseInt(document.getElementById(`${SCRIPT_ID}-saque-max`).value, 10) || 5)),
