@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         🏰 Up Village TW
 // @namespace    https://github.com/jvkuhn/kuhn-tw-scripts
-// @version      0.3.1
-// @description  Automação de evolução de aldeia no Tribal Wars BR (claim de missões/recompensas; futuras: construção, recrutamento, coleta)
+// @version      1.0.0
+// @description  Automação de evolução de aldeia em background — quest claim, construtor (sem precisar de Premium AM)
 // @author       jvkuhn
 // @include      https://*.tribalwars.com.br/*
 // @include      **game*
@@ -19,98 +19,351 @@ console.log('[🏰 UpVillage] Script carregando...');
 
     const SCRIPT_ID = 'kuhn-village';
     const log = (...args) => console.log('[🏰 UpVillage]', ...args);
-    log('IIFE iniciada — versão 0.3.1');
+    log('IIFE iniciada — versão 1.0.0');
 
-    const ENABLED_KEY = 'kuhn-village-enabled';
-    const TICK_MS = 4000;
-    const QUEST_OPEN_COOLDOWN_MS = 30000; // 30s entre tentativas de abrir popup vazio
-
-    // =====================================================================
-    // MÓDULO 1: AUTO-QUEST (resgatar missões/recompensas)
-    // Lógica nova (v0.3.1):
-    //  1. Se popup tá ABERTO → procura botão de claim. Se achar, clica.
-    //                          Se NÃO achar, NÃO faz nada (espera o popup fechar).
-    //  2. Se popup tá FECHADO → só clica em #new_quest se passou o cooldown
-    //                          (evita ficar abrindo popup vazio toda hora).
-    // =====================================================================
-    const QUEST_POPUP_SELECTOR = '.quest-popup-content, #main-tab.quest-popup-content';
-    const QUEST_CLAIM_SELECTOR = '.quest-complete-btn';
-    const QUEST_OPENER_SELECTOR = '#new_quest';
-    let lastQuestOpenAttempt = 0;
+    const STORAGE_KEY = 'kuhn-village-config';
+    const QUEUE_STATE_KEY = 'kuhn-village-queue-state';
+    const TICK_MS = 8000; // 8s entre ticks (não agressivo)
 
     // =====================================================================
-    // MÓDULOS FUTUROS (a implementar):
-    // - Auto Construtor: fila de construção baseada em plano
-    // - Auto Coleta: pegar recursos da coleta a cada X horas
-    // - Auto Recrutamento: manter tropas-alvo treinando
+    // CONFIG
     // =====================================================================
-
-    function isEnabled() {
-        return GM_getValue(ENABLED_KEY, false) === true;
+    function getDefaultConfig() {
+        return {
+            enabled: false,
+            modules: {
+                quest: true,
+                construtor: false,
+            },
+            buildPlan: '# Cole aqui a sequência de construção, um por linha.\n# Aliases aceitos: madeireira/wood, barro/stone, ferro/iron, granja/farm,\n# armazem/storage, esconderijo/hide, muralha/wall, principal/main,\n# quartel/barracks, estabulo/stable, oficina/garage, ferreiro/smith,\n# praca/place, estatua/statue, mercado/market, academia/snob, igreja/church\n#\n# Exemplo de início típico de mundo:\nmadeireira\nbarro\nferro\nmadeireira\nbarro\nferro\ngranja\narmazem\nmadeireira\nbarro\nferro\n',
+            queueMaxItems: 2, // free account = 2 slots de fila
+        };
     }
 
-    function setEnabled(v) {
-        GM_setValue(ENABLED_KEY, v);
-        updateButton();
-        log('Estado:', v ? 'LIGADO' : 'DESLIGADO');
-    }
-
-    function isVisible(el) {
-        if (!el || !el.offsetParent) return false;
-        const rect = el.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0;
-    }
-
-    function tryClick(selector, label) {
-        const el = document.querySelector(selector);
-        if (el && isVisible(el)) {
-            log(`[${label}] Clicando:`, selector);
-            el.click();
-            return true;
+    function getConfig() {
+        const raw = GM_getValue(STORAGE_KEY, null);
+        if (!raw) return getDefaultConfig();
+        try {
+            const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            return {
+                ...getDefaultConfig(),
+                ...parsed,
+                modules: { ...getDefaultConfig().modules, ...(parsed.modules || {}) },
+            };
+        } catch (e) {
+            log('Config corrompida, restaurando defaults.', e);
+            return getDefaultConfig();
         }
-        return false;
     }
 
-    function questModule() {
-        const popupOpen = isVisible(document.querySelector(QUEST_POPUP_SELECTOR));
-
-        if (popupOpen) {
-            // Popup aberto: tenta claim. Se não tem botão, espera popup fechar (não força nada).
-            if (tryClick(QUEST_CLAIM_SELECTOR, 'quest-claim')) return true;
-            return false;
-        }
-
-        // Popup fechado: só abre se passou o cooldown
-        const now = Date.now();
-        if (now - lastQuestOpenAttempt < QUEST_OPEN_COOLDOWN_MS) return false;
-
-        if (tryClick(QUEST_OPENER_SELECTOR, 'quest-open')) {
-            lastQuestOpenAttempt = now;
-            return true;
-        }
-        return false;
+    function setConfig(cfg) {
+        GM_setValue(STORAGE_KEY, JSON.stringify(cfg));
+        log('Config salva.');
     }
 
-    function tick() {
-        if (!isEnabled()) return;
-        // Módulo 1: quest
-        if (questModule()) return;
-        // (futuros módulos entram aqui)
+    // =====================================================================
+    // BUILDING ALIASES
+    // =====================================================================
+    const ALIASES = {
+        madeireira: 'wood', wood: 'wood', madeira: 'wood',
+        barro: 'stone', argila: 'stone', stone: 'stone', poco: 'stone',
+        ferro: 'iron', iron: 'iron', mina: 'iron',
+        granja: 'farm', farm: 'farm', fazenda: 'farm',
+        armazem: 'storage', storage: 'storage', deposito: 'storage',
+        esconderijo: 'hide', hide: 'hide',
+        muralha: 'wall', wall: 'wall', muro: 'wall',
+        principal: 'main', main: 'main', edificio: 'main',
+        quartel: 'barracks', barracks: 'barracks',
+        estabulo: 'stable', stable: 'stable',
+        oficina: 'garage', garage: 'garage', workshop: 'garage',
+        ferreiro: 'smith', smith: 'smith',
+        praca: 'place', place: 'place', reuniao: 'place',
+        estatua: 'statue', statue: 'statue',
+        mercado: 'market', market: 'market',
+        academia: 'snob', snob: 'snob',
+        igreja: 'church', church: 'church',
+        atalaia: 'watchtower', watchtower: 'watchtower',
+    };
+
+    function normalizeBuilding(name) {
+        const k = name.trim().toLowerCase().replace(/[^a-z]/g, '');
+        return ALIASES[k] || null;
+    }
+
+    function parsePlan(planText) {
+        return planText
+            .split('\n')
+            .map(l => l.trim())
+            .filter(l => l && !l.startsWith('#'))
+            .map(normalizeBuilding)
+            .filter(Boolean);
+    }
+
+    // =====================================================================
+    // FETCH HELPERS (TW internal API)
+    // =====================================================================
+    function buildUrl(screen, params = {}) {
+        const base = (typeof game_data !== 'undefined' && game_data.link_base_pure)
+            ? game_data.link_base_pure + screen
+            : `${location.pathname}?screen=${screen}`;
+        const qs = new URLSearchParams(params).toString();
+        return qs ? `${base}&${qs}` : base;
+    }
+
+    async function twFetch(url, opts = {}) {
+        try {
+            const res = await fetch(url, {
+                credentials: 'include',
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'TribalWars-Ajax': '1',
+                    ...(opts.headers || {}),
+                },
+                ...opts,
+            });
+            if (!res.ok) {
+                log(`HTTP ${res.status} em ${url}`);
+                return null;
+            }
+            const text = await res.text();
+            try {
+                return JSON.parse(text);
+            } catch {
+                return text;
+            }
+        } catch (e) {
+            log('Erro de fetch:', e.message);
+            return null;
+        }
+    }
+
+    // =====================================================================
+    // MÓDULO 1: QUEST (em background — sem abrir popup)
+    // =====================================================================
+    async function questModule() {
+        const cfg = getConfig();
+        if (!cfg.modules.quest) return;
+
+        if (typeof game_data === 'undefined' || !game_data.player) return;
+        const newQuestCount = parseInt(game_data.player.new_quest, 10) || 0;
+        if (newQuestCount <= 0) return;
+
+        log(`Quest: ${newQuestCount} pendente(s), buscando IDs...`);
+
+        // Fetch a lista de quests pra descobrir IDs disponíveis
+        const html = await twFetch(buildUrl('new_quests'));
+        if (typeof html !== 'string') return;
+
+        // Procura quest IDs no HTML (padrão data-quest-id="N" ou href com quest=N)
+        const ids = new Set();
+        const reA = /data-quest[-_]?id\s*=\s*["'](\d+)["']/gi;
+        const reB = /quest=(\d+)/g;
+        let m;
+        while ((m = reA.exec(html)) !== null) ids.add(m[1]);
+        while ((m = reB.exec(html)) !== null) ids.add(m[1]);
+
+        if (ids.size === 0) {
+            log('Quest: nenhum ID encontrado no HTML.');
+            return;
+        }
+
+        for (const id of ids) {
+            const url = buildUrl('api', { ajaxaction: 'quest_complete', quest: id, skip: 'false', h: game_data.csrf });
+            const result = await twFetch(url, { method: 'POST' });
+            log(`Quest ${id} claim →`, result ? 'OK' : 'FAIL');
+        }
+    }
+
+    // =====================================================================
+    // MÓDULO 2: CONSTRUTOR (em background — submete upgrades via API)
+    // =====================================================================
+    async function getQueueCount() {
+        // Fetch screen=main e conta itens em #buildqueue
+        const html = await twFetch(buildUrl('main'));
+        if (typeof html !== 'string') return null;
+        // Conta linhas <tr class="lit nodrag buildorder_*"> — cada uma é um item na fila
+        const matches = html.match(/<tr[^>]*\bbuildorder_\w+/g);
+        return matches ? matches.length : 0;
+    }
+
+    async function tryUpgrade(buildingType) {
+        const url = buildUrl('main', { ajaxaction: 'upgrade_building', type: buildingType, h: game_data.csrf });
+        const result = await twFetch(url, { method: 'POST' });
+        return result;
+    }
+
+    async function construtorModule() {
+        const cfg = getConfig();
+        if (!cfg.modules.construtor) return;
+
+        const plan = parsePlan(cfg.buildPlan);
+        if (plan.length === 0) return;
+
+        const queueCount = await getQueueCount();
+        if (queueCount === null) {
+            log('Construtor: não consegui ler fila.');
+            return;
+        }
+
+        if (queueCount >= cfg.queueMaxItems) {
+            log(`Construtor: fila cheia (${queueCount}/${cfg.queueMaxItems}).`);
+            return;
+        }
+
+        // Quantos prédios já foram enfileirados desde o início do plano?
+        // Estratégia simples: usa o índice = (total_já_enfileirado) que guardamos
+        const state = JSON.parse(GM_getValue(QUEUE_STATE_KEY, '{}') || '{}');
+        const planHash = plan.join('|');
+        if (state.planHash !== planHash) {
+            // Plano mudou, reseta progresso
+            state.planHash = planHash;
+            state.nextIndex = 0;
+        }
+
+        if (state.nextIndex >= plan.length) {
+            log('Construtor: plano completo!');
+            return;
+        }
+
+        const nextBuilding = plan[state.nextIndex];
+        log(`Construtor: tentando upar ${nextBuilding} (passo ${state.nextIndex + 1}/${plan.length})`);
+
+        const result = await tryUpgrade(nextBuilding);
+        if (result && (typeof result === 'object' ? !result.error : true)) {
+            state.nextIndex++;
+            GM_setValue(QUEUE_STATE_KEY, JSON.stringify(state));
+            log(`Construtor: ${nextBuilding} enfileirado. Próximo passo: ${state.nextIndex + 1}`);
+        } else {
+            log(`Construtor: ${nextBuilding} falhou (recursos? requisitos?). Tentando de novo no próximo tick.`);
+        }
+    }
+
+    // =====================================================================
+    // MAIN TICK
+    // =====================================================================
+    async function tick() {
+        const cfg = getConfig();
+        if (!cfg.enabled) return;
+        try {
+            await questModule();
+            await construtorModule();
+        } catch (e) {
+            log('Erro no tick:', e);
+        }
+    }
+
+    // =====================================================================
+    // HUD MODAL
+    // =====================================================================
+    function buildHudHtml() {
+        return `
+            <div id="${SCRIPT_ID}-overlay" style="
+                position:fixed;top:0;left:0;width:100%;height:100%;
+                background:rgba(0,0,0,0.6);z-index:99998;display:flex;
+                align-items:center;justify-content:center;">
+                <div style="
+                    background:#f4e4bc;border:2px solid #603000;border-radius:6px;
+                    padding:20px;width:560px;max-width:90vw;max-height:85vh;
+                    overflow:auto;font-family:Verdana,sans-serif;color:#000;">
+                    <h3 style="margin:0 0 12px 0;color:#603000;">🏰 Up Village — Painel de Controle</h3>
+
+                    <fieldset style="margin-bottom:10px;border:2px solid #603000;padding:8px;background:#fff8e0;">
+                        <legend><strong>Master</strong></legend>
+                        <label style="font-size:16px;">
+                            <input type="checkbox" id="${SCRIPT_ID}-enabled" style="transform:scale(1.4);margin-right:8px;">
+                            Ligar automação
+                        </label>
+                    </fieldset>
+
+                    <fieldset style="margin-bottom:10px;border:1px solid #999;padding:8px;">
+                        <legend>Módulos</legend>
+                        <label><input type="checkbox" id="${SCRIPT_ID}-mod-quest"> 🎯 Quest auto-claim (background)</label><br>
+                        <label><input type="checkbox" id="${SCRIPT_ID}-mod-construtor"> 🏗️ Construtor (segue plano abaixo)</label>
+                    </fieldset>
+
+                    <fieldset style="margin-bottom:10px;border:1px solid #999;padding:8px;">
+                        <legend>Plano de Construção</legend>
+                        <small>Um prédio por linha. Linhas com # são comentários.<br>Aliases: madeireira/barro/ferro/granja/armazem/muralha/principal/quartel/etc.</small>
+                        <textarea id="${SCRIPT_ID}-plan" style="width:100%;height:200px;font-family:monospace;margin-top:6px;"></textarea>
+                    </fieldset>
+
+                    <fieldset style="margin-bottom:10px;border:1px solid #999;padding:8px;">
+                        <legend>Fila</legend>
+                        <label>Slots máximos da fila (free=2, premium=5):
+                            <input type="number" id="${SCRIPT_ID}-queue-max" min="1" max="5" style="width:60px;">
+                        </label>
+                        <button id="${SCRIPT_ID}-reset-progress" style="margin-left:12px;">Resetar progresso do plano</button>
+                    </fieldset>
+
+                    <div style="text-align:right;">
+                        <button id="${SCRIPT_ID}-cancel">Fechar</button>
+                        <button id="${SCRIPT_ID}-save" style="margin-left:8px;">Salvar</button>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    function populateHud() {
+        const cfg = getConfig();
+        document.getElementById(`${SCRIPT_ID}-enabled`).checked = !!cfg.enabled;
+        document.getElementById(`${SCRIPT_ID}-mod-quest`).checked = !!cfg.modules.quest;
+        document.getElementById(`${SCRIPT_ID}-mod-construtor`).checked = !!cfg.modules.construtor;
+        document.getElementById(`${SCRIPT_ID}-plan`).value = cfg.buildPlan || '';
+        document.getElementById(`${SCRIPT_ID}-queue-max`).value = cfg.queueMaxItems || 2;
+    }
+
+    function readHud() {
+        return {
+            enabled: document.getElementById(`${SCRIPT_ID}-enabled`).checked,
+            modules: {
+                quest: document.getElementById(`${SCRIPT_ID}-mod-quest`).checked,
+                construtor: document.getElementById(`${SCRIPT_ID}-mod-construtor`).checked,
+            },
+            buildPlan: document.getElementById(`${SCRIPT_ID}-plan`).value,
+            queueMaxItems: Math.max(1, Math.min(5, parseInt(document.getElementById(`${SCRIPT_ID}-queue-max`).value, 10) || 2)),
+        };
+    }
+
+    function openHud() {
+        if (document.getElementById(`${SCRIPT_ID}-overlay`)) return;
+        document.body.insertAdjacentHTML('beforeend', buildHudHtml());
+        populateHud();
+
+        document.getElementById(`${SCRIPT_ID}-cancel`).addEventListener('click', closeHud);
+        document.getElementById(`${SCRIPT_ID}-overlay`).addEventListener('click', (e) => {
+            if (e.target.id === `${SCRIPT_ID}-overlay`) closeHud();
+        });
+        document.getElementById(`${SCRIPT_ID}-save`).addEventListener('click', () => {
+            setConfig(readHud());
+            updateButton();
+            alert('Salvo.');
+            closeHud();
+        });
+        document.getElementById(`${SCRIPT_ID}-reset-progress`).addEventListener('click', () => {
+            GM_setValue(QUEUE_STATE_KEY, '{}');
+            alert('Progresso do plano resetado. Próximo tick recomeça do início.');
+        });
+    }
+
+    function closeHud() {
+        const o = document.getElementById(`${SCRIPT_ID}-overlay`);
+        if (o) o.remove();
     }
 
     function updateButton() {
         const btn = document.getElementById(`${SCRIPT_ID}-btn`);
         if (!btn) return;
-        const on = isEnabled();
-        btn.textContent = on ? '🏰 ON' : '🏰 OFF';
-        btn.style.background = on ? '#2a8a2a' : '#666';
+        const cfg = getConfig();
+        btn.textContent = cfg.enabled ? '🏰 ON' : '🏰 OFF';
+        btn.style.background = cfg.enabled ? '#2a8a2a' : '#666';
     }
 
     function injectButton() {
         if (document.getElementById(`${SCRIPT_ID}-btn`)) return;
         const btn = document.createElement('div');
         btn.id = `${SCRIPT_ID}-btn`;
-        btn.title = 'Up Village — clique para ligar/desligar evolução automática';
+        btn.title = 'Up Village — clique para abrir painel';
         Object.assign(btn.style, {
             position: 'fixed',
             top: '270px',
@@ -126,7 +379,7 @@ console.log('[🏰 UpVillage] Script carregando...');
             userSelect: 'none',
             fontWeight: 'bold',
         });
-        btn.addEventListener('click', () => setEnabled(!isEnabled()));
+        btn.addEventListener('click', openHud);
         document.body.appendChild(btn);
         updateButton();
         log('Botão injetado.');
@@ -134,5 +387,5 @@ console.log('[🏰 UpVillage] Script carregando...');
 
     injectButton();
     setInterval(tick, TICK_MS);
-    log(`Loop iniciado (${TICK_MS}ms). Estado inicial: ${isEnabled() ? 'LIGADO' : 'DESLIGADO'}`);
+    log(`Loop iniciado (${TICK_MS}ms).`);
 })();
