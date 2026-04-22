@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🔔 Notificação TW
 // @namespace    https://github.com/jvkuhn/kuhn-tw-scripts
-// @version      1.0.0
+// @version      1.0.1
 // @description  Envia alertas Discord/Telegram para ataques chegando e captcha no Tribal Wars BR
 // @author       jvkuhn
 // @match        https://*.tribalwars.com.br/game.php*
@@ -15,11 +15,13 @@
 // @updateURL    https://raw.githubusercontent.com/jvkuhn/kuhn-tw-scripts/main/scripts/notificacao.user.js
 // ==/UserScript==
 
+console.log('[🔔 Notif] Script carregando...');
 (function () {
     'use strict';
 
     const SCRIPT_ID = 'kuhn-notif';
     const log = (...args) => console.log('[🔔 Notif]', ...args);
+    log('IIFE iniciada — versão 1.0.1');
 
     const STORAGE_KEY = 'kuhn-notif-config';
 
@@ -364,7 +366,7 @@
             btn.title = 'Sessão expirou — recarregue a página';
         } else {
             btn.textContent = '🔔';
-            btn.style.background = '#603000';
+            btn.style.background = '#cc0000';
             btn.title = 'Notificações TW (clique para configurar)';
         }
     }
@@ -473,16 +475,17 @@
         btn.title = 'Notificações TW (clique para configurar)';
         Object.assign(btn.style, {
             position: 'fixed',
-            top: '8px',
-            right: '8px',
-            background: '#603000',
+            top: '200px',
+            left: '8px',
+            background: '#cc0000',
             color: '#fff',
-            padding: '6px 10px',
+            padding: '10px 14px',
             cursor: 'pointer',
-            borderRadius: '4px',
+            borderRadius: '6px',
             zIndex: '99999',
-            fontSize: '18px',
-            border: '1px solid #2c1810',
+            fontSize: '24px',
+            border: '2px solid #fff',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
             userSelect: 'none',
         });
         btn.addEventListener('click', openModal);
