@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🏰 Up Village TW
 // @namespace    https://github.com/jvkuhn/kuhn-tw-scripts
-// @version      1.8.0
+// @version      1.9.0
 // @description  Automação de evolução de aldeia + recording mode (sniffer de rede) + uso de funções nativas do TW
 // @author       jvkuhn
 // @include      https://*.tribalwars.com.br/*
@@ -21,7 +21,7 @@ console.log('[🏰 UpVillage] Script carregando...');
     'use strict';
 
     const SCRIPT_ID = 'kuhn-village';
-    const SCRIPT_VERSION = '1.8.0';
+    const SCRIPT_VERSION = '1.9.0';
 
     // =====================================================================
     // BUILDING COSTS — fórmulas públicas TW BR (cost = base * factor^(N-1))
@@ -489,6 +489,7 @@ console.log('[🏰 UpVillage] Script carregando...');
                 construtor: false,
                 coleta: false,
                 recrutamento: false,
+                agendador: false,
             },
             // Coleta: tropas a enviar por squad (1-4)
             coletaUnits: 'spear:10,sword:0,axe:0,archer:0,light:0,marcher:0,heavy:0',
@@ -880,6 +881,158 @@ console.log('[🏰 UpVillage] Script carregando...');
     }
 
     // =====================================================================
+    // MÓDULO 5: AGENDADOR DE COMANDOS — EXPERIMENTAL
+    // Lógica: usuário cadastra (alvo, unidades, hora de chegada).
+    // Script calcula travel time, define hora de envio, e dispara no momento certo.
+    // =====================================================================
+
+    // Velocidades padrão TW BR em minutos/campo (sem world speed multiplier)
+    const UNIT_SPEEDS = {
+        spear: 18, sword: 22, axe: 18, archer: 18,
+        spy: 9, light: 10, marcher: 10, heavy: 11,
+        ram: 30, catapult: 30, knight: 10, snob: 35, militia: 30,
+    };
+
+    // World speed: TW expõe via game_data.speed em alguns mundos, fallback 1.0
+    function getWorldSpeed() {
+        if (typeof game_data !== 'undefined') {
+            if (game_data.speed) return parseFloat(game_data.speed) || 1.0;
+            if (game_data.world_speed) return parseFloat(game_data.world_speed) || 1.0;
+        }
+        return 1.0;
+    }
+
+    function calcDistance(x1, y1, x2, y2) {
+        const dx = x1 - x2, dy = y1 - y2;
+        return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    function getSlowestUnitSpeed(unitMap) {
+        let max = 0;
+        for (const [unit, qty] of Object.entries(unitMap)) {
+            if (qty <= 0) continue;
+            const s = UNIT_SPEEDS[unit];
+            if (s && s > max) max = s;
+        }
+        return max || 18; // fallback lança
+    }
+
+    function calcTravelTimeMs(distance, unitMap) {
+        const speed = getSlowestUnitSpeed(unitMap);
+        const minutesPerField = speed / getWorldSpeed();
+        return Math.round(distance * minutesPerField * 60 * 1000);
+    }
+
+    // Storage de comandos agendados
+    const SCHEDULE_KEY = 'kuhn-village-schedule';
+
+    function getSchedules() {
+        const raw = GM_getValue(SCHEDULE_KEY, '[]');
+        try {
+            const arr = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            return Array.isArray(arr) ? arr : [];
+        } catch { return []; }
+    }
+
+    function setSchedules(arr) {
+        GM_setValue(SCHEDULE_KEY, JSON.stringify(arr));
+    }
+
+    function addSchedule(item) {
+        const list = getSchedules();
+        item.id = `sched_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        item.sent = false;
+        item.created = Date.now();
+        list.push(item);
+        setSchedules(list);
+        return item;
+    }
+
+    function deleteSchedule(id) {
+        const list = getSchedules().filter(s => s.id !== id);
+        setSchedules(list);
+    }
+
+    // Sender best-guess. Padrão TW: 2 etapas (preview + confirm).
+    // Sem dado real do sniffer, primeiro implementa só envio direto via place&try=confirm.
+    async function sendScheduledCommand(item) {
+        const url = buildUrl('place', { try: 'confirm', target: `${item.x},${item.y}` });
+        const params = new URLSearchParams();
+        params.append('source', String(game_data.village.id));
+        params.append('target', `${item.x},${item.y}`);
+        for (const [unit, qty] of Object.entries(item.units)) {
+            if (qty > 0) params.append(unit, String(qty));
+        }
+        params.append('attack', item.kind === 'support' ? 'false' : 'true');
+        params.append('h', game_data.csrf);
+        return await twFetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: params.toString(),
+        });
+    }
+
+    // Tick de agendamento: roda em alta frequência quando há algo próximo.
+    let scheduleTickHandle = null;
+    function startScheduleTicker() {
+        if (scheduleTickHandle) return;
+        scheduleTickHandle = setInterval(scheduleTickHigh, 250);
+    }
+
+    function stopScheduleTicker() {
+        if (scheduleTickHandle) {
+            clearInterval(scheduleTickHandle);
+            scheduleTickHandle = null;
+        }
+    }
+
+    function scheduleTickHigh() {
+        const cfg = getConfig();
+        if (!cfg.modules.agendador) {
+            stopScheduleTicker();
+            return;
+        }
+        const list = getSchedules();
+        const now = Date.now();
+        let changed = false;
+        let hasPending = false;
+        for (const item of list) {
+            if (item.sent) continue;
+            const sendAt = item.sendAt || (item.arrivalMs - calcTravelTimeMs(calcDistance(item.sourceX, item.sourceY, item.x, item.y), item.units));
+            if (now >= sendAt) {
+                log(`Agendador: disparando comando ${item.id} → (${item.x},${item.y})`);
+                sendScheduledCommand(item).then(r => {
+                    log(`Agendador: ${item.id} resultado:`, JSON.stringify(r).slice(0, 200));
+                });
+                item.sent = true;
+                item.sentAt = now;
+                changed = true;
+            } else if (sendAt - now < 60000) {
+                hasPending = true;
+            }
+        }
+        if (changed) setSchedules(list);
+        if (!hasPending) stopScheduleTicker(); // volta pro loop normal de 8s
+    }
+
+    // No tick normal, decide se precisa subir pra tick alta freq
+    async function agendadorModule() {
+        const cfg = getConfig();
+        if (!cfg.modules.agendador) return;
+        const list = getSchedules();
+        const now = Date.now();
+        for (const item of list) {
+            if (item.sent) continue;
+            const sendAt = item.sendAt || (item.arrivalMs - calcTravelTimeMs(calcDistance(item.sourceX, item.sourceY, item.x, item.y), item.units));
+            if (sendAt - now < 60000) {
+                startScheduleTicker(); // sobe pra alta freq
+                return;
+            }
+        }
+    }
+    // =====================================================================
+
+    // =====================================================================
     // MAIN TICK
     // =====================================================================
     async function tick() {
@@ -890,6 +1043,7 @@ console.log('[🏰 UpVillage] Script carregando...');
             await construtorModule();
             await coletaModule();
             await recrutamentoModule();
+            await agendadorModule();
         } catch (e) {
             log('Erro no tick:', e);
         }
@@ -938,7 +1092,39 @@ console.log('[🏰 UpVillage] Script carregando...');
                         <label><input type="checkbox" id="${SCRIPT_ID}-mod-quest"> 🎯 Quest auto-claim (background)</label><br>
                         <label><input type="checkbox" id="${SCRIPT_ID}-mod-construtor"> 🏗️ Construtor (segue plano abaixo)</label><br>
                         <label><input type="checkbox" id="${SCRIPT_ID}-mod-coleta"> 🌾 Coleta de recursos <small style="color:#a00;">(experimental)</small></label><br>
-                        <label><input type="checkbox" id="${SCRIPT_ID}-mod-recrutamento"> ⚔️ Recrutamento <small style="color:#a00;">(experimental)</small></label>
+                        <label><input type="checkbox" id="${SCRIPT_ID}-mod-recrutamento"> ⚔️ Recrutamento <small style="color:#a00;">(experimental)</small></label><br>
+                        <label><input type="checkbox" id="${SCRIPT_ID}-mod-agendador"> 🗓️ Agendador de comandos <small style="color:#a00;">(experimental)</small></label>
+                    </fieldset>
+
+                    <fieldset style="margin-bottom:10px;border:1px solid #999;padding:8px;">
+                        <legend>🗓️ Agendador — Calculadora + Lista</legend>
+                        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px;font-size:11px;">
+                            <label>Alvo X:<input type="number" id="${SCRIPT_ID}-sched-x" style="width:100%;"></label>
+                            <label>Alvo Y:<input type="number" id="${SCRIPT_ID}-sched-y" style="width:100%;"></label>
+                            <label>Tipo:
+                                <select id="${SCRIPT_ID}-sched-kind" style="width:100%;">
+                                    <option value="attack">Ataque</option>
+                                    <option value="support">Apoio</option>
+                                </select>
+                            </label>
+                            <label>Chegada (ISO):<input type="text" id="${SCRIPT_ID}-sched-arrival" placeholder="2026-04-22T20:00:00" style="width:100%;font-size:10px;"></label>
+                        </div>
+                        <label style="display:block;margin-top:6px;">Unidades:
+                            <input type="text" id="${SCRIPT_ID}-sched-units" style="width:100%;font-family:monospace;font-size:11px;" placeholder="spear:100,sword:50,light:30">
+                        </label>
+                        <div style="margin-top:6px;display:flex;gap:6px;">
+                            <button id="${SCRIPT_ID}-sched-calc">Calcular tempo</button>
+                            <button id="${SCRIPT_ID}-sched-add">Adicionar agendamento</button>
+                        </div>
+                        <div id="${SCRIPT_ID}-sched-info" style="margin-top:6px;font-size:11px;color:#603000;"></div>
+                        <table style="width:100%;margin-top:8px;font-size:11px;border-collapse:collapse;">
+                            <thead>
+                                <tr style="background:#603000;color:#fff;">
+                                    <th>Alvo</th><th>Tipo</th><th>Tropas</th><th>Envio</th><th>Chegada</th><th>Status</th><th></th>
+                                </tr>
+                            </thead>
+                            <tbody id="${SCRIPT_ID}-sched-list"></tbody>
+                        </table>
                     </fieldset>
 
                     <fieldset style="margin-bottom:10px;border:1px solid #999;padding:8px;">
@@ -992,6 +1178,44 @@ console.log('[🏰 UpVillage] Script carregando...');
                 </div>
             </div>
         `;
+    }
+
+    function renderScheduleList() {
+        const tbody = document.getElementById(`${SCRIPT_ID}-sched-list`);
+        if (!tbody) return;
+        const list = getSchedules();
+        if (list.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="7" style="padding:6px;text-align:center;color:#888;">Sem agendamentos</td></tr>';
+            return;
+        }
+        tbody.innerHTML = list.map(s => {
+            const travelMs = calcTravelTimeMs(calcDistance(s.sourceX, s.sourceY, s.x, s.y), s.units);
+            const sendAt = s.arrivalMs - travelMs;
+            const tropas = Object.entries(s.units).filter(([, q]) => q > 0).map(([u, q]) => `${u}:${q}`).join(' ');
+            const status = s.sent
+                ? `<span style="color:#2a8a2a;">enviado</span>`
+                : (sendAt < Date.now() ? '<span style="color:#a00;">PERDIDO</span>' : '<span style="color:#603000;">aguardando</span>');
+            return `
+                <tr>
+                    <td>${s.x},${s.y}</td>
+                    <td>${s.kind === 'support' ? '🛡️' : '⚔️'}</td>
+                    <td style="font-size:10px;">${tropas}</td>
+                    <td style="font-size:10px;">${new Date(sendAt).toLocaleString()}</td>
+                    <td style="font-size:10px;">${new Date(s.arrivalMs).toLocaleString()}</td>
+                    <td>${status}</td>
+                    <td><button data-sched="${s.id}" class="${SCRIPT_ID}-sched-del" style="color:red;">✕</button></td>
+                </tr>
+            `;
+        }).join('');
+        tbody.querySelectorAll(`.${SCRIPT_ID}-sched-del`).forEach(el => {
+            el.addEventListener('click', (e) => {
+                const id = e.target.dataset.sched;
+                if (confirm('Remover agendamento?')) {
+                    deleteSchedule(id);
+                    renderScheduleList();
+                }
+            });
+        });
     }
 
     function buildBuildingDropdownOptions(selectedId) {
@@ -1090,8 +1314,10 @@ console.log('[🏰 UpVillage] Script carregando...');
         document.getElementById(`${SCRIPT_ID}-mod-quest`).checked = !!cfg.modules.quest;
         document.getElementById(`${SCRIPT_ID}-mod-coleta`).checked = !!cfg.modules.coleta;
         document.getElementById(`${SCRIPT_ID}-mod-recrutamento`).checked = !!cfg.modules.recrutamento;
+        document.getElementById(`${SCRIPT_ID}-mod-agendador`).checked = !!cfg.modules.agendador;
         document.getElementById(`${SCRIPT_ID}-coleta-units`).value = cfg.coletaUnits || '';
         document.getElementById(`${SCRIPT_ID}-recrut-targets`).value = cfg.recrutamentoTargets || '';
+        renderScheduleList();
         document.getElementById(`${SCRIPT_ID}-mod-construtor`).checked = !!cfg.modules.construtor;
         document.getElementById(`${SCRIPT_ID}-queue-max`).value = cfg.queueMaxItems || 2;
         hudPlan = JSON.parse(JSON.stringify(cfg.plan || []));
@@ -1114,6 +1340,7 @@ console.log('[🏰 UpVillage] Script carregando...');
                 construtor: document.getElementById(`${SCRIPT_ID}-mod-construtor`).checked,
                 coleta: document.getElementById(`${SCRIPT_ID}-mod-coleta`).checked,
                 recrutamento: document.getElementById(`${SCRIPT_ID}-mod-recrutamento`).checked,
+                agendador: document.getElementById(`${SCRIPT_ID}-mod-agendador`).checked,
             },
             coletaUnits: document.getElementById(`${SCRIPT_ID}-coleta-units`).value || '',
             recrutamentoTargets: document.getElementById(`${SCRIPT_ID}-recrut-targets`).value || '',
@@ -1144,6 +1371,58 @@ console.log('[🏰 UpVillage] Script carregando...');
         document.getElementById(`${SCRIPT_ID}-import-btn`).addEventListener('click', () => {
             alert('Decoder do template do Account Manager ainda não implementado. Vai estar na próxima versão.');
         });
+        document.getElementById(`${SCRIPT_ID}-sched-calc`).addEventListener('click', () => {
+            const x = parseInt(document.getElementById(`${SCRIPT_ID}-sched-x`).value, 10);
+            const y = parseInt(document.getElementById(`${SCRIPT_ID}-sched-y`).value, 10);
+            const units = parseUnitMap(document.getElementById(`${SCRIPT_ID}-sched-units`).value);
+            const arrivalIso = document.getElementById(`${SCRIPT_ID}-sched-arrival`).value;
+            const info = document.getElementById(`${SCRIPT_ID}-sched-info`);
+            if (!x || !y || Object.values(units).every(v => v <= 0)) {
+                info.innerHTML = '<span style="color:#a00;">Preencha alvo (X,Y) e tropas.</span>';
+                return;
+            }
+            const sourceX = game_data.village.x;
+            const sourceY = game_data.village.y;
+            const dist = calcDistance(sourceX, sourceY, x, y);
+            const travelMs = calcTravelTimeMs(dist, units);
+            const slowest = getSlowestUnitSpeed(units);
+            const arrivalMs = arrivalIso ? new Date(arrivalIso).getTime() : (Date.now() + travelMs);
+            const sendAt = arrivalMs - travelMs;
+            const sendIso = new Date(sendAt).toLocaleString();
+            const arrIso = new Date(arrivalMs).toLocaleString();
+            info.innerHTML = `Distância: ${dist.toFixed(2)} campos | Mais lenta: ${slowest} min/campo | World speed: ${getWorldSpeed()}<br>` +
+                `Tempo de viagem: ${(travelMs / 1000 / 60).toFixed(1)} min<br>` +
+                `<strong>Envio:</strong> ${sendIso} | <strong>Chegada:</strong> ${arrIso}`;
+        });
+
+        document.getElementById(`${SCRIPT_ID}-sched-add`).addEventListener('click', () => {
+            const x = parseInt(document.getElementById(`${SCRIPT_ID}-sched-x`).value, 10);
+            const y = parseInt(document.getElementById(`${SCRIPT_ID}-sched-y`).value, 10);
+            const kind = document.getElementById(`${SCRIPT_ID}-sched-kind`).value;
+            const units = parseUnitMap(document.getElementById(`${SCRIPT_ID}-sched-units`).value);
+            const arrivalIso = document.getElementById(`${SCRIPT_ID}-sched-arrival`).value;
+            if (!x || !y || !arrivalIso || Object.values(units).every(v => v <= 0)) {
+                alert('Preencha alvo, hora de chegada e tropas.');
+                return;
+            }
+            const arrivalMs = new Date(arrivalIso).getTime();
+            if (isNaN(arrivalMs) || arrivalMs < Date.now()) {
+                alert('Hora de chegada inválida ou no passado.');
+                return;
+            }
+            const sourceX = game_data.village.x;
+            const sourceY = game_data.village.y;
+            const item = {
+                x, y, kind, units,
+                arrivalMs,
+                sourceX, sourceY,
+                sourceVillage: game_data.village.id,
+            };
+            addSchedule(item);
+            renderScheduleList();
+            alert('Agendamento adicionado.');
+        });
+
         document.getElementById(`${SCRIPT_ID}-test-webhook`).addEventListener('click', () => {
             const url = document.getElementById(`${SCRIPT_ID}-webhook`).value.trim();
             if (!/^https:\/\/discord\.com\/api\/webhooks\//.test(url)) {
