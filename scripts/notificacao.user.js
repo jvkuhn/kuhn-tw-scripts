@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🔔 Notificação TW
 // @namespace    https://github.com/jvkuhn/kuhn-tw-scripts
-// @version      1.0.2
+// @version      1.1.0
 // @description  Envia alertas Discord/Telegram para ataques chegando e captcha no Tribal Wars BR
 // @author       jvkuhn
 // @include      https://*.tribalwars.com.br/*
@@ -22,7 +22,7 @@ console.log('[🔔 Notif] Script carregando...');
 
     const SCRIPT_ID = 'kuhn-notif';
     const log = (...args) => console.log('[🔔 Notif]', ...args);
-    log('IIFE iniciada — versão 1.0.1');
+    log('IIFE iniciada — versão 1.1.0');
 
     const STORAGE_KEY = 'kuhn-notif-config';
 
@@ -35,6 +35,7 @@ console.log('[🔔 Notif] Script carregando...');
             events: {
                 ataqueChegando: true,
                 captcha: true,
+                mensagemNova: true,
             },
         };
     }
@@ -216,7 +217,8 @@ console.log('[🔔 Notif] Script carregando...');
                     <fieldset style="margin-bottom:10px;border:1px solid #999;padding:8px;">
                         <legend>Eventos</legend>
                         <label><input type="checkbox" id="${SCRIPT_ID}-evt-ataque"> Ataque chegando</label><br>
-                        <label><input type="checkbox" id="${SCRIPT_ID}-evt-captcha"> Captcha apareceu</label>
+                        <label><input type="checkbox" id="${SCRIPT_ID}-evt-captcha"> Captcha apareceu</label><br>
+                        <label><input type="checkbox" id="${SCRIPT_ID}-evt-mensagem"> Mensagem nova de player</label>
                     </fieldset>
 
                     <fieldset style="margin-bottom:10px;border:1px solid #999;padding:8px;">
@@ -242,6 +244,7 @@ console.log('[🔔 Notif] Script carregando...');
         document.getElementById(`${SCRIPT_ID}-tg-chatid`).value = cfg.telegramChatId || '';
         document.getElementById(`${SCRIPT_ID}-evt-ataque`).checked = !!cfg.events.ataqueChegando;
         document.getElementById(`${SCRIPT_ID}-evt-captcha`).checked = !!cfg.events.captcha;
+        document.getElementById(`${SCRIPT_ID}-evt-mensagem`).checked = !!cfg.events.mensagemNova;
         document.getElementById(`${SCRIPT_ID}-interval`).value = cfg.intervalSec || 30;
         updateStatusBadges(cfg);
     }
@@ -263,6 +266,7 @@ console.log('[🔔 Notif] Script carregando...');
             events: {
                 ataqueChegando: document.getElementById(`${SCRIPT_ID}-evt-ataque`).checked,
                 captcha: document.getElementById(`${SCRIPT_ID}-evt-captcha`).checked,
+                mensagemNova: document.getElementById(`${SCRIPT_ID}-evt-mensagem`).checked,
             },
         };
     }
@@ -351,6 +355,54 @@ console.log('[🔔 Notif] Script carregando...');
         }
     }
 
+    const MENSAGEM_LAST_KEY = 'kuhn-notif-mensagem-last';
+
+    function getCurrentMessagesCount() {
+        if (typeof game_data !== 'undefined' && game_data.player) {
+            const p = game_data.player;
+            const candidates = [p.new_messages, p.unread_messages, p.messages];
+            for (const v of candidates) {
+                if (v != null) return parseInt(v, 10) || 0;
+            }
+        }
+        const selectors = [
+            '#message_amount',
+            '.icon-messages.amount',
+            '#new_message',
+            '#new_messages',
+            'a[href*="screen=mail"] .quickbar_innerbox_box',
+            '.menu-icons-image-mail + .quickbar_inner',
+        ];
+        for (const sel of selectors) {
+            const el = document.querySelector(sel);
+            if (el) {
+                const m = el.textContent.match(/\d+/);
+                if (m) return parseInt(m[0], 10);
+            }
+        }
+        return null;
+    }
+
+    function checkMensagemNova() {
+        const cfg = getConfig();
+        if (!cfg.events.mensagemNova) return;
+
+        const current = getCurrentMessagesCount();
+        if (current === null) {
+            log('Não foi possível ler contador de mensagens.');
+            return;
+        }
+
+        const last = parseInt(GM_getValue(MENSAGEM_LAST_KEY, '0'), 10) || 0;
+        GM_setValue(MENSAGEM_LAST_KEY, String(current));
+
+        if (current > last) {
+            const novos = current - last;
+            const msg = `Você tem ${current} mensagem${current > 1 ? 'ns' : ''} nova${current > 1 ? 's' : ''}${novos > 1 ? ` (+${novos})` : ''}.`;
+            notify('✉️ Mensagem de player', msg, 'mensagem', `count-${current}-at-${Date.now()}`);
+        }
+    }
+
     let consecutiveErrors = 0;
     const MAX_ERRORS = 3;
 
@@ -387,6 +439,7 @@ console.log('[🔔 Notif] Script carregando...');
         }
         try {
             checkAtaqueChegando();
+            checkMensagemNova();
             consecutiveErrors = 0;
             setButtonState('ok');
         } catch (e) {
