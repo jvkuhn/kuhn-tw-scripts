@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🏰 Up Village TW
 // @namespace    https://github.com/jvkuhn/kuhn-tw-scripts
-// @version      0.3.0
+// @version      0.3.1
 // @description  Automação de evolução de aldeia no Tribal Wars BR (claim de missões/recompensas; futuras: construção, recrutamento, coleta)
 // @author       jvkuhn
 // @include      https://*.tribalwars.com.br/*
@@ -19,20 +19,24 @@ console.log('[🏰 UpVillage] Script carregando...');
 
     const SCRIPT_ID = 'kuhn-village';
     const log = (...args) => console.log('[🏰 UpVillage]', ...args);
-    log('IIFE iniciada — versão 0.3.0');
+    log('IIFE iniciada — versão 0.3.1');
 
     const ENABLED_KEY = 'kuhn-village-enabled';
     const TICK_MS = 4000;
+    const QUEST_OPEN_COOLDOWN_MS = 30000; // 30s entre tentativas de abrir popup vazio
 
     // =====================================================================
     // MÓDULO 1: AUTO-QUEST (resgatar missões/recompensas)
-    // Sequência: clica no popup pra resgatar; se popup fechado, abre.
-    // Ordem importa: '.quest-complete-btn' antes de '#new_quest'.
+    // Lógica nova (v0.3.1):
+    //  1. Se popup tá ABERTO → procura botão de claim. Se achar, clica.
+    //                          Se NÃO achar, NÃO faz nada (espera o popup fechar).
+    //  2. Se popup tá FECHADO → só clica em #new_quest se passou o cooldown
+    //                          (evita ficar abrindo popup vazio toda hora).
     // =====================================================================
-    const QUEST_SELECTORS = [
-        '.quest-complete-btn',  // botão verde "Concluir/Resgatar" dentro do popup
-        '#new_quest',           // ícone de quest pendente (abre popup)
-    ];
+    const QUEST_POPUP_SELECTOR = '.quest-popup-content, #main-tab.quest-popup-content';
+    const QUEST_CLAIM_SELECTOR = '.quest-complete-btn';
+    const QUEST_OPENER_SELECTOR = '#new_quest';
+    let lastQuestOpenAttempt = 0;
 
     // =====================================================================
     // MÓDULOS FUTUROS (a implementar):
@@ -57,14 +61,32 @@ console.log('[🏰 UpVillage] Script carregando...');
         return rect.width > 0 && rect.height > 0;
     }
 
-    function tryClick(selectors, label) {
-        for (const sel of selectors) {
-            const el = document.querySelector(sel);
-            if (el && isVisible(el)) {
-                log(`[${label}] Clicando:`, sel);
-                el.click();
-                return true;
-            }
+    function tryClick(selector, label) {
+        const el = document.querySelector(selector);
+        if (el && isVisible(el)) {
+            log(`[${label}] Clicando:`, selector);
+            el.click();
+            return true;
+        }
+        return false;
+    }
+
+    function questModule() {
+        const popupOpen = isVisible(document.querySelector(QUEST_POPUP_SELECTOR));
+
+        if (popupOpen) {
+            // Popup aberto: tenta claim. Se não tem botão, espera popup fechar (não força nada).
+            if (tryClick(QUEST_CLAIM_SELECTOR, 'quest-claim')) return true;
+            return false;
+        }
+
+        // Popup fechado: só abre se passou o cooldown
+        const now = Date.now();
+        if (now - lastQuestOpenAttempt < QUEST_OPEN_COOLDOWN_MS) return false;
+
+        if (tryClick(QUEST_OPENER_SELECTOR, 'quest-open')) {
+            lastQuestOpenAttempt = now;
+            return true;
         }
         return false;
     }
@@ -72,7 +94,7 @@ console.log('[🏰 UpVillage] Script carregando...');
     function tick() {
         if (!isEnabled()) return;
         // Módulo 1: quest
-        if (tryClick(QUEST_SELECTORS, 'quest')) return;
+        if (questModule()) return;
         // (futuros módulos entram aqui)
     }
 
