@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🏰 Up Village TW
 // @namespace    https://github.com/jvkuhn/kuhn-tw-scripts
-// @version      1.9.0
+// @version      1.10.0
 // @description  Automação de evolução de aldeia + recording mode (sniffer de rede) + uso de funções nativas do TW
 // @author       jvkuhn
 // @include      https://*.tribalwars.com.br/*
@@ -21,7 +21,7 @@ console.log('[🏰 UpVillage] Script carregando...');
     'use strict';
 
     const SCRIPT_ID = 'kuhn-village';
-    const SCRIPT_VERSION = '1.9.0';
+    const SCRIPT_VERSION = '1.10.0';
 
     // =====================================================================
     // BUILDING COSTS — fórmulas públicas TW BR (cost = base * factor^(N-1))
@@ -893,14 +893,46 @@ console.log('[🏰 UpVillage] Script carregando...');
         ram: 30, catapult: 30, knight: 10, snob: 35, militia: 30,
     };
 
-    // World speed: TW expõe via game_data.speed em alguns mundos, fallback 1.0
+    // World speed config: cacheia em localStorage por 24h
+    const WORLD_CONFIG_KEY = 'kuhn_tw_world_config';
+
+    async function fetchWorldConfig() {
+        try {
+            const cached = JSON.parse(localStorage.getItem(WORLD_CONFIG_KEY) || '{}');
+            if (cached.fetchedAt && (Date.now() - cached.fetchedAt) < 24 * 3600 * 1000) {
+                return cached;
+            }
+        } catch {}
+        try {
+            const r = await fetch('/interface.php?func=get_config', { credentials: 'include' });
+            const xml = await r.text();
+            const speed = parseFloat((xml.match(/<speed>([^<]+)<\/speed>/) || [])[1]) || 1.0;
+            const unitSpeed = parseFloat((xml.match(/<unit_speed>([^<]+)<\/unit_speed>/) || [])[1]) || 1.0;
+            const data = { speed, unitSpeed, fetchedAt: Date.now() };
+            localStorage.setItem(WORLD_CONFIG_KEY, JSON.stringify(data));
+            console.log(`[🏰 UpVillage] World config: speed=${speed}, unitSpeed=${unitSpeed}`);
+            return data;
+        } catch (e) {
+            console.warn('[🏰 UpVillage] fetchWorldConfig falhou, usando fallback 1.0:', e.message);
+            return { speed: 1.0, unitSpeed: 1.0, fetchedAt: Date.now() };
+        }
+    }
+
     function getWorldSpeed() {
+        // Combinação: world_speed * unit_speed = multiplicador total que divide o tempo de viagem
+        try {
+            const cached = JSON.parse(localStorage.getItem(WORLD_CONFIG_KEY) || '{}');
+            if (cached.speed) return (cached.speed || 1.0) * (cached.unitSpeed || 1.0);
+        } catch {}
+        // Fallback: tenta game_data
         if (typeof game_data !== 'undefined') {
             if (game_data.speed) return parseFloat(game_data.speed) || 1.0;
-            if (game_data.world_speed) return parseFloat(game_data.world_speed) || 1.0;
         }
         return 1.0;
     }
+
+    // Fetch world config no startup (não bloqueia)
+    fetchWorldConfig();
 
     function calcDistance(x1, y1, x2, y2) {
         const dx = x1 - x2, dy = y1 - y2;
@@ -953,23 +985,108 @@ console.log('[🏰 UpVillage] Script carregando...');
         setSchedules(list);
     }
 
-    // Sender best-guess. Padrão TW: 2 etapas (preview + confirm).
-    // Sem dado real do sniffer, primeiro implementa só envio direto via place&try=confirm.
-    async function sendScheduledCommand(item) {
-        const url = buildUrl('place', { try: 'confirm', target: `${item.x},${item.y}` });
-        const params = new URLSearchParams();
-        params.append('source', String(game_data.village.id));
-        params.append('target', `${item.x},${item.y}`);
-        for (const [unit, qty] of Object.entries(item.units)) {
-            if (qty > 0) params.append(unit, String(qty));
+    // Padrão Paulinho: abre tab ~25s antes, tab carrega place screen,
+    // detecta marker no URL, preenche tropas, dispara no momento exato.
+    function openScheduledTab(item) {
+        if (item.tabOpened) return;
+        const base = `${location.origin}${game_data.link_base_pure || `/game.php?village=${game_data.village.id}&screen=`}`;
+        const url = `${base}place&target=${item.x},${item.y}&_kuhn_sched=${item.id}`;
+        log(`Agendador: abrindo tab pra ${item.id} em ${url}`);
+        const win = window.open(url, '_blank');
+        if (!win) {
+            log(`Agendador: window.open foi bloqueada (popup blocker?). Habilita popups pra TW.`);
+            return;
         }
-        params.append('attack', item.kind === 'support' ? 'false' : 'true');
-        params.append('h', game_data.csrf);
-        return await twFetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: params.toString(),
+        item.tabOpened = true;
+        const list = getSchedules().map(s => s.id === item.id ? { ...s, tabOpened: true } : s);
+        setSchedules(list);
+    }
+
+    // Função executada APENAS na tab agendada (detectada via URL marker)
+    async function handleScheduledTab() {
+        const params = new URL(location.href).searchParams;
+        const schedId = params.get('_kuhn_sched');
+        if (!schedId) return;
+
+        console.log(`[🏰 SCHED-TAB] Modo agendamento ${schedId}`);
+
+        // Mostra banner visível
+        const banner = document.createElement('div');
+        Object.assign(banner.style, {
+            position: 'fixed', top: '0', left: '0', right: '0',
+            background: '#603000', color: '#fff', padding: '8px',
+            zIndex: '999999', fontSize: '14px', textAlign: 'center', fontFamily: 'monospace',
         });
+        banner.id = 'kuhn-sched-banner';
+        banner.textContent = `🗓️ TAB AGENDADA — ${schedId} — esperando hora de envio…`;
+        document.body && document.body.appendChild(banner);
+
+        // Espera form de comando ficar disponível
+        async function waitFor(selector, timeoutMs = 8000) {
+            const t0 = Date.now();
+            while (Date.now() - t0 < timeoutMs) {
+                const el = document.querySelector(selector);
+                if (el) return el;
+                await new Promise(r => setTimeout(r, 100));
+            }
+            return null;
+        }
+
+        const form = await waitFor('form#command-data-form, form[action*="screen=place"]');
+        if (!form) {
+            banner.textContent = `❌ Não achou form de comando. Veja se está em screen=place.`;
+            return;
+        }
+
+        // Carrega item do storage
+        const list = getSchedules();
+        const item = list.find(s => s.id === schedId);
+        if (!item) {
+            banner.textContent = `❌ Agendamento ${schedId} não encontrado no storage.`;
+            return;
+        }
+
+        // Preenche tropas
+        for (const [unit, qty] of Object.entries(item.units)) {
+            if (qty <= 0) continue;
+            const inp = form.querySelector(`input[name="${unit}"]`);
+            if (inp) inp.value = String(qty);
+        }
+        banner.textContent = `🗓️ Tropas preenchidas. Aguardando momento exato...`;
+
+        // Calcula sendAt
+        const dist = calcDistance(item.sourceX, item.sourceY, item.x, item.y);
+        const travelMs = calcTravelTimeMs(dist, item.units);
+        const sendAt = item.arrivalMs - travelMs;
+
+        // Loop alta precisão até sendAt
+        while (Date.now() < sendAt) {
+            const remaining = sendAt - Date.now();
+            banner.textContent = `🗓️ Disparo em ${(remaining / 1000).toFixed(2)}s`;
+            const sleepMs = remaining > 1000 ? 200 : 20;
+            await new Promise(r => setTimeout(r, sleepMs));
+        }
+
+        // DISPARA
+        banner.textContent = `🚀 DISPARANDO!`;
+        banner.style.background = '#a00';
+        const submitBtn = item.kind === 'support'
+            ? (form.querySelector('input[name="support"], #support, button[name="support"]') || form.querySelector('input[type="submit"]'))
+            : (form.querySelector('input[name="attack"], #attack, button[name="attack"]') || form.querySelector('input[type="submit"]'));
+        if (submitBtn) {
+            submitBtn.click();
+        } else {
+            form.submit();
+        }
+
+        // Marca como enviado
+        const updated = getSchedules().map(s => s.id === schedId ? { ...s, sent: true, sentAt: Date.now() } : s);
+        setSchedules(updated);
+
+        setTimeout(() => {
+            banner.textContent = `✅ Enviado. Tab fecha em 5s.`;
+            setTimeout(() => window.close(), 5000);
+        }, 1000);
     }
 
     // Tick de agendamento: roda em alta frequência quando há algo próximo.
@@ -994,25 +1111,21 @@ console.log('[🏰 UpVillage] Script carregando...');
         }
         const list = getSchedules();
         const now = Date.now();
-        let changed = false;
         let hasPending = false;
         for (const item of list) {
             if (item.sent) continue;
-            const sendAt = item.sendAt || (item.arrivalMs - calcTravelTimeMs(calcDistance(item.sourceX, item.sourceY, item.x, item.y), item.units));
-            if (now >= sendAt) {
-                log(`Agendador: disparando comando ${item.id} → (${item.x},${item.y})`);
-                sendScheduledCommand(item).then(r => {
-                    log(`Agendador: ${item.id} resultado:`, JSON.stringify(r).slice(0, 200));
-                });
-                item.sent = true;
-                item.sentAt = now;
-                changed = true;
+            const dist = calcDistance(item.sourceX, item.sourceY, item.x, item.y);
+            const travelMs = calcTravelTimeMs(dist, item.units);
+            const sendAt = item.arrivalMs - travelMs;
+            // Abre tab 25s antes do envio (tempo pra carregar place screen + preparar form)
+            if (!item.tabOpened && (sendAt - now) <= 25000 && (sendAt - now) > -5000) {
+                openScheduledTab(item);
+                hasPending = true;
             } else if (sendAt - now < 60000) {
                 hasPending = true;
             }
         }
-        if (changed) setSchedules(list);
-        if (!hasPending) stopScheduleTicker(); // volta pro loop normal de 8s
+        if (!hasPending) stopScheduleTicker();
     }
 
     // No tick normal, decide se precisa subir pra tick alta freq
@@ -1564,9 +1677,15 @@ console.log('[🏰 UpVillage] Script carregando...');
         log('Botão injetado.');
     }
 
-    injectButton();
-    injectStatusPanel();
-    setInterval(tick, TICK_MS);
-    setInterval(updateStatusPanel, 3000); // status panel refresh independente
-    log(`Loop iniciado (${TICK_MS}ms).`);
+    // Se URL contém marker de tab agendada, ativa modo especial e SAI (sem init normal)
+    if (location.search.includes('_kuhn_sched=')) {
+        log('Tab agendada detectada — entrando em modo handleScheduledTab.');
+        handleScheduledTab();
+    } else {
+        injectButton();
+        injectStatusPanel();
+        setInterval(tick, TICK_MS);
+        setInterval(updateStatusPanel, 3000);
+        log(`Loop iniciado (${TICK_MS}ms).`);
+    }
 })();
