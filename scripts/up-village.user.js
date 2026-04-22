@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🏰 Up Village TW
 // @namespace    https://github.com/jvkuhn/kuhn-tw-scripts
-// @version      1.10.0
+// @version      1.11.0
 // @description  Automação de evolução de aldeia + recording mode (sniffer de rede) + uso de funções nativas do TW
 // @author       jvkuhn
 // @include      https://*.tribalwars.com.br/*
@@ -21,7 +21,7 @@ console.log('[🏰 UpVillage] Script carregando...');
     'use strict';
 
     const SCRIPT_ID = 'kuhn-village';
-    const SCRIPT_VERSION = '1.10.0';
+    const SCRIPT_VERSION = '1.11.0';
 
     // =====================================================================
     // BUILDING COSTS — fórmulas públicas TW BR (cost = base * factor^(N-1))
@@ -490,7 +490,11 @@ console.log('[🏰 UpVillage] Script carregando...');
                 coleta: false,
                 recrutamento: false,
                 agendador: false,
+                assistenteSaque: false,
             },
+            // Assistente de Saque: template A ou B, máximo de ataques por tick
+            saqueTemplate: 'a', // 'a' ou 'b'
+            saqueMaxPorTick: 5,
             // Coleta: tropas a enviar por squad (1-4)
             coletaUnits: 'spear:10,sword:0,axe:0,archer:0,light:0,marcher:0,heavy:0',
             // Recrutamento: alvo de cada unidade (manter no mínimo X treinando)
@@ -881,6 +885,95 @@ console.log('[🏰 UpVillage] Script carregando...');
     }
 
     // =====================================================================
+    // MÓDULO 6: ASSISTENTE DE SAQUE (Farm Assistant) — EXPERIMENTAL
+    // Vai em screen=am_farm, lista vilas bárbaras, dispara templates A/B.
+    // Endpoint pattern conhecido: POST screen=am_farm com target+template_id+h.
+    // =====================================================================
+
+    // Lê HTML do am_farm e extrai (target_id, template_id_A, template_id_B) por linha
+    async function getFarmTargets() {
+        const html = await twFetch(buildUrl('am_farm'));
+        if (typeof html !== 'string') return null;
+
+        // Cada linha de vila no am_farm tem botões com onclick chamando Accountmanager.farm
+        // Padrão: Accountmanager.farm(template_id, target_id, attack_id)
+        // OU: links com class="farm_icon" e data-target-id / data-template-id
+        const targets = [];
+        // Tenta padrão de onclick
+        const reA = /Accountmanager\.farm\((\d+),\s*(\d+)/g;
+        let m;
+        while ((m = reA.exec(html)) !== null) {
+            targets.push({ template_id: m[1], target_id: m[2] });
+        }
+        // Tenta padrão alternativo via data-attrs
+        if (targets.length === 0) {
+            const reB = /data-target-id["']?\s*=\s*["'](\d+)["'][^>]*data-template-id["']?\s*=\s*["'](\d+)/g;
+            while ((m = reB.exec(html)) !== null) {
+                targets.push({ target_id: m[1], template_id: m[2] });
+            }
+        }
+
+        // Detectar template A e B no HTML (geralmente tem dois IDs distintos no top)
+        const templateIds = new Set(targets.map(t => t.template_id));
+        const sortedTemplates = [...templateIds].sort();
+        return {
+            targets,
+            templateA: sortedTemplates[0],
+            templateB: sortedTemplates[1],
+        };
+    }
+
+    async function fireFarmAttack(targetId, templateId) {
+        const url = buildUrl('am_farm', { ajaxaction: 'farm_template' });
+        const params = new URLSearchParams({
+            target: String(targetId),
+            template_id: String(templateId),
+            source: String(game_data.village.id),
+            h: game_data.csrf,
+        });
+        return await twFetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: params.toString(),
+        });
+    }
+
+    async function assistenteSaqueModule() {
+        const cfg = getConfig();
+        if (!cfg.modules.assistenteSaque) return;
+
+        // Verifica se feature FarmAssistent está disponível pra esse jogador
+        if (typeof game_data !== 'undefined' && game_data.features && game_data.features.FarmAssistent && game_data.features.FarmAssistent.possible === false) {
+            log('Saque: feature FarmAssistent não disponível neste mundo/conta.');
+            return;
+        }
+
+        const data = await getFarmTargets();
+        if (!data || data.targets.length === 0) {
+            log('Saque: nenhum alvo encontrado em am_farm (HTML não bateu padrão conhecido).');
+            return;
+        }
+
+        const wantedTemplate = (cfg.saqueTemplate === 'b') ? data.templateB : data.templateA;
+        if (!wantedTemplate) {
+            log(`Saque: template ${cfg.saqueTemplate.toUpperCase()} não encontrado.`);
+            return;
+        }
+
+        const max = cfg.saqueMaxPorTick || 5;
+        const filtered = data.targets.filter(t => t.template_id === wantedTemplate).slice(0, max);
+        log(`Saque: disparando ${filtered.length} ataque(s) com template ${cfg.saqueTemplate.toUpperCase()} (id ${wantedTemplate})`);
+
+        for (const t of filtered) {
+            const r = await fireFarmAttack(t.target_id, wantedTemplate);
+            log(`Saque: target=${t.target_id} →`, JSON.stringify(r).slice(0, 150));
+            // Pequeno delay entre ataques pra não parecer bot
+            await new Promise(r2 => setTimeout(r2, 300 + Math.random() * 400));
+        }
+    }
+    // =====================================================================
+
+    // =====================================================================
     // MÓDULO 5: AGENDADOR DE COMANDOS — EXPERIMENTAL
     // Lógica: usuário cadastra (alvo, unidades, hora de chegada).
     // Script calcula travel time, define hora de envio, e dispara no momento certo.
@@ -1157,6 +1250,7 @@ console.log('[🏰 UpVillage] Script carregando...');
             await coletaModule();
             await recrutamentoModule();
             await agendadorModule();
+            await assistenteSaqueModule();
         } catch (e) {
             log('Erro no tick:', e);
         }
@@ -1206,7 +1300,24 @@ console.log('[🏰 UpVillage] Script carregando...');
                         <label><input type="checkbox" id="${SCRIPT_ID}-mod-construtor"> 🏗️ Construtor (segue plano abaixo)</label><br>
                         <label><input type="checkbox" id="${SCRIPT_ID}-mod-coleta"> 🌾 Coleta de recursos <small style="color:#a00;">(experimental)</small></label><br>
                         <label><input type="checkbox" id="${SCRIPT_ID}-mod-recrutamento"> ⚔️ Recrutamento <small style="color:#a00;">(experimental)</small></label><br>
-                        <label><input type="checkbox" id="${SCRIPT_ID}-mod-agendador"> 🗓️ Agendador de comandos <small style="color:#a00;">(experimental)</small></label>
+                        <label><input type="checkbox" id="${SCRIPT_ID}-mod-agendador"> 🗓️ Agendador de comandos <small style="color:#a00;">(experimental)</small></label><br>
+                        <label><input type="checkbox" id="${SCRIPT_ID}-mod-saque"> 💰 Assistente de Saque (am_farm) <small style="color:#a00;">(experimental)</small></label>
+                    </fieldset>
+
+                    <fieldset style="margin-bottom:10px;border:1px solid #999;padding:8px;">
+                        <legend>💰 Assistente de Saque</legend>
+                        <label>Template:
+                            <select id="${SCRIPT_ID}-saque-template" style="margin-left:6px;">
+                                <option value="a">A</option>
+                                <option value="b">B</option>
+                            </select>
+                        </label>
+                        <label style="margin-left:12px;">Máx. ataques por tick:
+                            <input type="number" id="${SCRIPT_ID}-saque-max" min="1" max="50" style="width:60px;">
+                        </label>
+                        <small style="display:block;color:#666;margin-top:4px;">
+                            Vai em screen=am_farm e dispara o template selecionado em até N alvos por ciclo. Tick = 8s.
+                        </small>
                     </fieldset>
 
                     <fieldset style="margin-bottom:10px;border:1px solid #999;padding:8px;">
@@ -1428,6 +1539,9 @@ console.log('[🏰 UpVillage] Script carregando...');
         document.getElementById(`${SCRIPT_ID}-mod-coleta`).checked = !!cfg.modules.coleta;
         document.getElementById(`${SCRIPT_ID}-mod-recrutamento`).checked = !!cfg.modules.recrutamento;
         document.getElementById(`${SCRIPT_ID}-mod-agendador`).checked = !!cfg.modules.agendador;
+        document.getElementById(`${SCRIPT_ID}-mod-saque`).checked = !!cfg.modules.assistenteSaque;
+        document.getElementById(`${SCRIPT_ID}-saque-template`).value = cfg.saqueTemplate || 'a';
+        document.getElementById(`${SCRIPT_ID}-saque-max`).value = cfg.saqueMaxPorTick || 5;
         document.getElementById(`${SCRIPT_ID}-coleta-units`).value = cfg.coletaUnits || '';
         document.getElementById(`${SCRIPT_ID}-recrut-targets`).value = cfg.recrutamentoTargets || '';
         renderScheduleList();
@@ -1454,7 +1568,10 @@ console.log('[🏰 UpVillage] Script carregando...');
                 coleta: document.getElementById(`${SCRIPT_ID}-mod-coleta`).checked,
                 recrutamento: document.getElementById(`${SCRIPT_ID}-mod-recrutamento`).checked,
                 agendador: document.getElementById(`${SCRIPT_ID}-mod-agendador`).checked,
+                assistenteSaque: document.getElementById(`${SCRIPT_ID}-mod-saque`).checked,
             },
+            saqueTemplate: document.getElementById(`${SCRIPT_ID}-saque-template`).value || 'a',
+            saqueMaxPorTick: Math.max(1, Math.min(50, parseInt(document.getElementById(`${SCRIPT_ID}-saque-max`).value, 10) || 5)),
             coletaUnits: document.getElementById(`${SCRIPT_ID}-coleta-units`).value || '',
             recrutamentoTargets: document.getElementById(`${SCRIPT_ID}-recrut-targets`).value || '',
             plan: hudPlan,
