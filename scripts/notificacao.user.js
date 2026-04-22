@@ -367,6 +367,54 @@
         }
     }
 
+    const CAPTCHA_SELECTORS = [
+        '#popup_box_bot_protection',
+        '#bot_check',
+        '[class*="bot_protection"]',
+        '#botprotection_quest',
+    ];
+
+    function findCaptchaElement(node) {
+        if (!(node instanceof Element)) return null;
+        for (const sel of CAPTCHA_SELECTORS) {
+            if (node.matches && node.matches(sel)) return node;
+            const found = node.querySelector ? node.querySelector(sel) : null;
+            if (found) return found;
+        }
+        return null;
+    }
+
+    function startCaptchaObserver() {
+        const cfg = getConfig();
+        if (!cfg.events.captcha) return;
+
+        for (const sel of CAPTCHA_SELECTORS) {
+            if (document.querySelector(sel)) {
+                notify('🤖 Captcha apareceu', 'Verificação anti-bot detectada — resolva no jogo.', 'captcha', `present-${Date.now()}`);
+                break;
+            }
+        }
+
+        const observer = new MutationObserver((mutations) => {
+            if (!getConfig().events.captcha) return;
+            for (const m of mutations) {
+                for (const added of m.addedNodes) {
+                    if (findCaptchaElement(added)) {
+                        notify(
+                            '🤖 Captcha apareceu',
+                            'Verificação anti-bot detectada — resolva no jogo.',
+                            'captcha',
+                            `mutation-${Date.now()}`,
+                        );
+                        return;
+                    }
+                }
+            }
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+        log('Observer de captcha ativo.');
+    }
+
     function injectButton() {
         if (document.getElementById(`${SCRIPT_ID}-btn`)) return;
 
@@ -395,4 +443,5 @@
 
     injectButton();
     startLoop();
+    startCaptchaObserver();
 })();
