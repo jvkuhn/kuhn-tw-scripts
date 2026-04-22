@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🏰 Up Village TW
 // @namespace    https://github.com/jvkuhn/kuhn-tw-scripts
-// @version      1.2.2
+// @version      1.2.3
 // @description  Automação de evolução de aldeia em background — quest claim, construtor com plano visual (sem precisar de Premium AM)
 // @author       jvkuhn
 // @include      https://*.tribalwars.com.br/*
@@ -20,7 +20,11 @@ console.log('[🏰 UpVillage] Script carregando...');
     'use strict';
 
     const SCRIPT_ID = 'kuhn-village';
-    const SCRIPT_VERSION = '1.2.2';
+    const SCRIPT_VERSION = '1.2.3';
+
+    // Flag global pra evitar recursão entre log() ↔ getConfig()
+    // Atualizada quando config é lida/salva. Default false (sem debug).
+    let debugEnabled = false;
 
     const STORAGE_KEY = 'kuhn-village-config';
     const TICK_MS = 8000;
@@ -102,8 +106,7 @@ console.log('[🏰 UpVillage] Script carregando...');
     }
 
     function debugPush(level, args) {
-        const cfg = getConfig();
-        if (!cfg.debug) return;
+        if (!debugEnabled) return; // checa flag global, não chama getConfig (evita recursão)
         const ts = new Date().toLocaleTimeString();
         const text = args.map(a => {
             if (a instanceof Error) return a.message;
@@ -145,6 +148,8 @@ console.log('[🏰 UpVillage] Script carregando...');
     setInterval(flushDebug, DEBUG_FLUSH_MS);
     // ---------------- /Discord debug ----------------
 
+    // Inicializa flag debugEnabled lendo a config (síncrono, antes do primeiro log)
+    try { getConfig(); } catch {}
     log(`IIFE iniciada — versão ${SCRIPT_VERSION}`);
 
     // =====================================================================
@@ -176,7 +181,11 @@ console.log('[🏰 UpVillage] Script carregando...');
 
     function getConfig() {
         const raw = GM_getValue(STORAGE_KEY, null);
-        if (!raw) return getDefaultConfig();
+        if (!raw) {
+            const def = getDefaultConfig();
+            debugEnabled = !!def.debug;
+            return def;
+        }
         try {
             const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
             const merged = {
@@ -186,19 +195,28 @@ console.log('[🏰 UpVillage] Script carregando...');
             };
             // Migração de versões antigas que tinham buildPlan (string)
             if (parsed.buildPlan && (!parsed.plan || parsed.plan.length === 0)) {
-                merged.plan = migrateBuildPlanText(parsed.buildPlan);
+                try {
+                    merged.plan = migrateBuildPlanText(parsed.buildPlan);
+                } catch (e) {
+                    console.error('[🏰 UpVillage] migrateBuildPlanText falhou:', e);
+                    merged.plan = [];
+                }
             }
-            // Garante array
             if (!Array.isArray(merged.plan)) merged.plan = [];
+            debugEnabled = !!merged.debug;
             return merged;
         } catch (e) {
-            log('Config corrompida, restaurando defaults.', e);
-            return getDefaultConfig();
+            // NÃO chama log() aqui — log → debugPush → getConfig = recursão infinita
+            console.error('[🏰 UpVillage] Config corrompida, restaurando defaults.', e);
+            const def = getDefaultConfig();
+            debugEnabled = !!def.debug;
+            return def;
         }
     }
 
     function setConfig(cfg) {
         GM_setValue(STORAGE_KEY, JSON.stringify(cfg));
+        debugEnabled = !!cfg.debug;
         log('Config salva.');
     }
 
