@@ -106,8 +106,15 @@
             headers: { 'Content-Type': 'application/json' },
             data: JSON.stringify(payload),
             onload: (res) => {
-                if (res.status >= 200 && res.status < 300) onResult(null);
-                else onResult(new Error(`Discord HTTP ${res.status}: ${res.responseText.slice(0, 100)}`));
+                if (res.status >= 200 && res.status < 300) {
+                    onResult(null);
+                } else if (res.status === 429) {
+                    let retry = 5;
+                    try { retry = JSON.parse(res.responseText).retry_after || 5; } catch {}
+                    onResult(new Error(`Discord rate limited, retry após ${retry}s`));
+                } else {
+                    onResult(new Error(`Discord HTTP ${res.status}: ${res.responseText.slice(0, 100)}`));
+                }
             },
             onerror: () => onResult(new Error('Discord network error')),
         });
@@ -119,8 +126,13 @@
             method: 'GET',
             url,
             onload: (res) => {
-                if (res.status >= 200 && res.status < 300) onResult(null);
-                else onResult(new Error(`Telegram HTTP ${res.status}: ${res.responseText.slice(0, 100)}`));
+                if (res.status >= 200 && res.status < 300) {
+                    onResult(null);
+                } else if (res.status === 429) {
+                    onResult(new Error('Telegram rate limited'));
+                } else {
+                    onResult(new Error(`Telegram HTTP ${res.status}: ${res.responseText.slice(0, 100)}`));
+                }
             },
             onerror: () => onResult(new Error('Telegram network error')),
         });
@@ -336,13 +348,50 @@
         }
     }
 
+    let consecutiveErrors = 0;
+    const MAX_ERRORS = 3;
+
+    function setButtonState(state) {
+        const btn = document.getElementById(`${SCRIPT_ID}-btn`);
+        if (!btn) return;
+        if (state === 'error') {
+            btn.textContent = '⚠️';
+            btn.style.background = '#a00';
+            btn.title = 'Erros consecutivos — clique para ver config / recarregar';
+        } else if (state === 'paused') {
+            btn.textContent = '⏸️';
+            btn.style.background = '#666';
+            btn.title = 'Sessão expirou — recarregue a página';
+        } else {
+            btn.textContent = '🔔';
+            btn.style.background = '#603000';
+            btn.title = 'Notificações TW (clique para configurar)';
+        }
+    }
+
+    function isSessionLost() {
+        return typeof game_data === 'undefined' || !game_data.player;
+    }
+
     let loopHandle = null;
 
     function loopTick() {
+        if (isSessionLost()) {
+            log('Sessão TW perdida — pausando loop.');
+            setButtonState('paused');
+            stopLoop();
+            return;
+        }
         try {
             checkAtaqueChegando();
+            consecutiveErrors = 0;
+            setButtonState('ok');
         } catch (e) {
-            log('Erro no tick:', e);
+            consecutiveErrors++;
+            log(`Erro no tick (${consecutiveErrors}/${MAX_ERRORS}):`, e);
+            if (consecutiveErrors >= MAX_ERRORS) {
+                setButtonState('error');
+            }
         }
     }
 
