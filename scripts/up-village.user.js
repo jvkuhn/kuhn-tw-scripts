@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🏰 Up Village TW
 // @namespace    https://github.com/jvkuhn/kuhn-tw-scripts
-// @version      1.7.0
+// @version      1.8.0
 // @description  Automação de evolução de aldeia + recording mode (sniffer de rede) + uso de funções nativas do TW
 // @author       jvkuhn
 // @include      https://*.tribalwars.com.br/*
@@ -21,7 +21,7 @@ console.log('[🏰 UpVillage] Script carregando...');
     'use strict';
 
     const SCRIPT_ID = 'kuhn-village';
-    const SCRIPT_VERSION = '1.7.0';
+    const SCRIPT_VERSION = '1.8.0';
 
     // =====================================================================
     // BUILDING COSTS — fórmulas públicas TW BR (cost = base * factor^(N-1))
@@ -487,7 +487,13 @@ console.log('[🏰 UpVillage] Script carregando...');
             modules: {
                 quest: true,
                 construtor: false,
+                coleta: false,
+                recrutamento: false,
             },
+            // Coleta: tropas a enviar por squad (1-4)
+            coletaUnits: 'spear:10,sword:0,axe:0,archer:0,light:0,marcher:0,heavy:0',
+            // Recrutamento: alvo de cada unidade (manter no mínimo X treinando)
+            recrutamentoTargets: 'spear:50,sword:0,axe:0',
             // Plano agora é lista de { building, target }
             // Construtor compara com nível atual e só constrói o que falta.
             plan: [
@@ -753,6 +759,127 @@ console.log('[🏰 UpVillage] Script carregando...');
     }
 
     // =====================================================================
+    // MÓDULO 3: COLETA (scavenging) — EXPERIMENTAL
+    // Endpoint baseado em conhecimento da comunidade TW. Pode precisar
+    // ajuste após teste real (recording mode mostra a chamada certa).
+    // =====================================================================
+    function parseUnitMap(str) {
+        // "spear:10,sword:5" → {spear: 10, sword: 5}
+        const out = {};
+        for (const part of (str || '').split(',')) {
+            const [k, v] = part.split(':').map(s => (s || '').trim());
+            if (k) out[k] = parseInt(v, 10) || 0;
+        }
+        return out;
+    }
+
+    async function getColetaState() {
+        // Tenta endpoint AJAX conhecido pra estado dos squads
+        const r = await twFetch(buildUrl('scavenge_api', { ajaxaction: 'getInfo' }));
+        if (r && r.response) return r.response;
+        return null;
+    }
+
+    async function startScavenge(squadId, unitAmounts) {
+        const url = buildUrl('scavenge_api', { ajaxaction: 'send_squad' });
+        // Comunidade reporta dois formatos possíveis: JSON encoded ou bracket notation
+        const params = new URLSearchParams();
+        params.append('squad_id', String(squadId));
+        params.append('candidate_squad_id', String(squadId));
+        for (const [unit, qty] of Object.entries(unitAmounts)) {
+            params.append(`unit_amounts[${unit}]`, String(qty));
+        }
+        params.append('h', game_data.csrf);
+        const result = await twFetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: params.toString(),
+        });
+        return result;
+    }
+
+    async function coletaModule() {
+        const cfg = getConfig();
+        if (!cfg.modules.coleta) return;
+        const units = parseUnitMap(cfg.coletaUnits);
+        const totalUnits = Object.values(units).reduce((a, b) => a + b, 0);
+        if (totalUnits === 0) {
+            log('Coleta: nenhuma unidade configurada (cfg.coletaUnits vazio).');
+            return;
+        }
+
+        const state = await getColetaState();
+        if (!state) {
+            log('Coleta: getInfo falhou (endpoint pode estar diferente — capture via recording).');
+            return;
+        }
+
+        // state.squads esperado tipo {1: {free_at: timestamp, ...}, 2: {...}, ...}
+        const squads = state.squads || state;
+        const now = Date.now() / 1000;
+        for (const [squadId, info] of Object.entries(squads || {})) {
+            if (!info || typeof info !== 'object') continue;
+            const freeAt = parseInt(info.free_at, 10) || 0;
+            if (freeAt > now) {
+                continue; // squad ocupado
+            }
+            log(`Coleta: enviando squad ${squadId} com ${JSON.stringify(units)}`);
+            const r = await startScavenge(squadId, units);
+            log(`Coleta: squad ${squadId} resultado:`, JSON.stringify(r).slice(0, 200));
+        }
+    }
+
+    // =====================================================================
+    // MÓDULO 4: RECRUTAMENTO — EXPERIMENTAL
+    // =====================================================================
+    const RECRUIT_BUILDINGS = {
+        spear: 'barracks', sword: 'barracks', axe: 'barracks', archer: 'barracks',
+        spy: 'stable', light: 'stable', marcher: 'stable', heavy: 'stable',
+        ram: 'garage', catapult: 'garage',
+    };
+
+    async function tryRecruit(buildingScreen, units) {
+        const url = buildUrl(buildingScreen, { ajaxaction: 'recruit' });
+        const params = new URLSearchParams();
+        for (const [unit, qty] of Object.entries(units)) {
+            if (qty > 0) params.append(`units[${unit}]`, String(qty));
+        }
+        params.append('h', game_data.csrf);
+        return await twFetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: params.toString(),
+        });
+    }
+
+    async function recrutamentoModule() {
+        const cfg = getConfig();
+        if (!cfg.modules.recrutamento) return;
+        const targets = parseUnitMap(cfg.recrutamentoTargets);
+        const total = Object.values(targets).reduce((a, b) => a + b, 0);
+        if (total === 0) {
+            log('Recrutamento: nenhum alvo configurado.');
+            return;
+        }
+
+        // Agrupa unidades por prédio
+        const byBuilding = {};
+        for (const [unit, qty] of Object.entries(targets)) {
+            if (qty <= 0) continue;
+            const b = RECRUIT_BUILDINGS[unit];
+            if (!b) continue;
+            byBuilding[b] = byBuilding[b] || {};
+            byBuilding[b][unit] = qty;
+        }
+
+        for (const [building, units] of Object.entries(byBuilding)) {
+            log(`Recrutamento: tentando ${building} → ${JSON.stringify(units)}`);
+            const r = await tryRecruit(building, units);
+            log(`Recrutamento: ${building} resultado:`, JSON.stringify(r).slice(0, 200));
+        }
+    }
+
+    // =====================================================================
     // MAIN TICK
     // =====================================================================
     async function tick() {
@@ -761,6 +888,8 @@ console.log('[🏰 UpVillage] Script carregando...');
         try {
             await questModule();
             await construtorModule();
+            await coletaModule();
+            await recrutamentoModule();
         } catch (e) {
             log('Erro no tick:', e);
         }
@@ -807,7 +936,21 @@ console.log('[🏰 UpVillage] Script carregando...');
                     <fieldset style="margin-bottom:10px;border:1px solid #999;padding:8px;">
                         <legend>Módulos</legend>
                         <label><input type="checkbox" id="${SCRIPT_ID}-mod-quest"> 🎯 Quest auto-claim (background)</label><br>
-                        <label><input type="checkbox" id="${SCRIPT_ID}-mod-construtor"> 🏗️ Construtor (segue plano abaixo)</label>
+                        <label><input type="checkbox" id="${SCRIPT_ID}-mod-construtor"> 🏗️ Construtor (segue plano abaixo)</label><br>
+                        <label><input type="checkbox" id="${SCRIPT_ID}-mod-coleta"> 🌾 Coleta de recursos <small style="color:#a00;">(experimental)</small></label><br>
+                        <label><input type="checkbox" id="${SCRIPT_ID}-mod-recrutamento"> ⚔️ Recrutamento <small style="color:#a00;">(experimental)</small></label>
+                    </fieldset>
+
+                    <fieldset style="margin-bottom:10px;border:1px solid #999;padding:8px;">
+                        <legend>Coleta — unidades a enviar por squad</legend>
+                        <input type="text" id="${SCRIPT_ID}-coleta-units" style="width:100%;font-family:monospace;font-size:11px;" placeholder="spear:10,sword:0,axe:0,archer:0,light:0,marcher:0,heavy:0">
+                        <small style="color:#666;">Formato: <code>unidade:quantidade,...</code>. Aplica a todos os 4 squads.</small>
+                    </fieldset>
+
+                    <fieldset style="margin-bottom:10px;border:1px solid #999;padding:8px;">
+                        <legend>Recrutamento — quantidade por turno</legend>
+                        <input type="text" id="${SCRIPT_ID}-recrut-targets" style="width:100%;font-family:monospace;font-size:11px;" placeholder="spear:50,sword:0,axe:0">
+                        <small style="color:#666;">Quanto solicitar a cada tick. <strong>Cuidado:</strong> consome recursos rápido.</small>
                     </fieldset>
 
                     <fieldset style="margin-bottom:10px;border:1px solid #999;padding:8px;">
@@ -945,6 +1088,10 @@ console.log('[🏰 UpVillage] Script carregando...');
             webhookField.value = cfg.discordWebhookUrl || (typeof localStorage !== 'undefined' ? (localStorage.getItem('kuhn_tw_shared_webhook') || '') : '');
         }
         document.getElementById(`${SCRIPT_ID}-mod-quest`).checked = !!cfg.modules.quest;
+        document.getElementById(`${SCRIPT_ID}-mod-coleta`).checked = !!cfg.modules.coleta;
+        document.getElementById(`${SCRIPT_ID}-mod-recrutamento`).checked = !!cfg.modules.recrutamento;
+        document.getElementById(`${SCRIPT_ID}-coleta-units`).value = cfg.coletaUnits || '';
+        document.getElementById(`${SCRIPT_ID}-recrut-targets`).value = cfg.recrutamentoTargets || '';
         document.getElementById(`${SCRIPT_ID}-mod-construtor`).checked = !!cfg.modules.construtor;
         document.getElementById(`${SCRIPT_ID}-queue-max`).value = cfg.queueMaxItems || 2;
         hudPlan = JSON.parse(JSON.stringify(cfg.plan || []));
@@ -965,7 +1112,11 @@ console.log('[🏰 UpVillage] Script carregando...');
             modules: {
                 quest: document.getElementById(`${SCRIPT_ID}-mod-quest`).checked,
                 construtor: document.getElementById(`${SCRIPT_ID}-mod-construtor`).checked,
+                coleta: document.getElementById(`${SCRIPT_ID}-mod-coleta`).checked,
+                recrutamento: document.getElementById(`${SCRIPT_ID}-mod-recrutamento`).checked,
             },
+            coletaUnits: document.getElementById(`${SCRIPT_ID}-coleta-units`).value || '',
+            recrutamentoTargets: document.getElementById(`${SCRIPT_ID}-recrut-targets`).value || '',
             plan: hudPlan,
             queueMaxItems: Math.max(1, Math.min(5, parseInt(document.getElementById(`${SCRIPT_ID}-queue-max`).value, 10) || 2)),
         };
