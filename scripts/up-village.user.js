@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🏰 Up Village TW
 // @namespace    https://github.com/jvkuhn/kuhn-tw-scripts
-// @version      1.3.3
+// @version      1.3.4
 // @description  Automação de evolução de aldeia + recording mode (sniffer de rede) + uso de funções nativas do TW
 // @author       jvkuhn
 // @include      https://*.tribalwars.com.br/*
@@ -21,7 +21,7 @@ console.log('[🏰 UpVillage] Script carregando...');
     'use strict';
 
     const SCRIPT_ID = 'kuhn-village';
-    const SCRIPT_VERSION = '1.3.3';
+    const SCRIPT_VERSION = '1.3.4';
 
     // Flags globais — atualizadas ao ler/salvar config
     let debugEnabled = false;
@@ -227,6 +227,16 @@ console.log('[🏰 UpVillage] Script carregando...');
     const DEBUG_MAX_MSG_CHARS = 1800;
 
     function getDiscordWebhook() {
+        // Prioridade: (1) webhook da própria config, (2) localStorage compartilhado,
+        // (3) GM_getValue do notificacao (falha se scripts são isolados, mas mantemos por segurança)
+        try {
+            const cfg = getConfig();
+            if (cfg.discordWebhookUrl) return cfg.discordWebhookUrl;
+        } catch {}
+        try {
+            const local = localStorage.getItem('kuhn_tw_shared_webhook');
+            if (local) return local;
+        } catch {}
         const raw = GM_getValue('kuhn-notif-config', null);
         if (!raw) return null;
         try {
@@ -292,6 +302,7 @@ console.log('[🏰 UpVillage] Script carregando...');
             enabled: false,
             debug: false,
             recording: false,
+            discordWebhookUrl: '',
             modules: {
                 quest: true,
                 construtor: false,
@@ -581,7 +592,12 @@ console.log('[🏰 UpVillage] Script carregando...');
                         <label style="margin-top:6px;display:inline-block;">
                             <input type="checkbox" id="${SCRIPT_ID}-recording" style="margin-right:6px;">
                             🎬 Modo Recording — captura toda chamada AJAX do TW (use junto com 🐛 pra ver no Discord)
+                        </label><br>
+                        <label style="display:block;margin-top:8px;">
+                            Discord Webhook URL (cola aqui — scripts têm storage isolado no Tampermonkey):
+                            <input type="text" id="${SCRIPT_ID}-webhook" style="width:100%;padding:3px;font-family:monospace;font-size:11px;" placeholder="https://discord.com/api/webhooks/...">
                         </label>
+                        <button id="${SCRIPT_ID}-test-webhook" style="margin-top:4px;">Testar Webhook</button>
                     </fieldset>
 
                     <fieldset style="margin-bottom:10px;border:1px solid #999;padding:8px;">
@@ -710,6 +726,11 @@ console.log('[🏰 UpVillage] Script carregando...');
         document.getElementById(`${SCRIPT_ID}-enabled`).checked = !!cfg.enabled;
         document.getElementById(`${SCRIPT_ID}-debug`).checked = !!cfg.debug;
         document.getElementById(`${SCRIPT_ID}-recording`).checked = !!cfg.recording;
+        // Webhook: preenche com o que tiver na config, ou localStorage, ou storage do notificacao
+        const webhookField = document.getElementById(`${SCRIPT_ID}-webhook`);
+        if (webhookField) {
+            webhookField.value = cfg.discordWebhookUrl || (typeof localStorage !== 'undefined' ? (localStorage.getItem('kuhn_tw_shared_webhook') || '') : '');
+        }
         document.getElementById(`${SCRIPT_ID}-mod-quest`).checked = !!cfg.modules.quest;
         document.getElementById(`${SCRIPT_ID}-mod-construtor`).checked = !!cfg.modules.construtor;
         document.getElementById(`${SCRIPT_ID}-queue-max`).value = cfg.queueMaxItems || 2;
@@ -718,10 +739,16 @@ console.log('[🏰 UpVillage] Script carregando...');
     }
 
     function readHud() {
+        const webhookUrl = (document.getElementById(`${SCRIPT_ID}-webhook`).value || '').trim();
+        // Sincroniza o webhook no localStorage pra outros scripts usarem
+        try {
+            if (webhookUrl) localStorage.setItem('kuhn_tw_shared_webhook', webhookUrl);
+        } catch {}
         return {
             enabled: document.getElementById(`${SCRIPT_ID}-enabled`).checked,
             debug: document.getElementById(`${SCRIPT_ID}-debug`).checked,
             recording: document.getElementById(`${SCRIPT_ID}-recording`).checked,
+            discordWebhookUrl: webhookUrl,
             modules: {
                 quest: document.getElementById(`${SCRIPT_ID}-mod-quest`).checked,
                 construtor: document.getElementById(`${SCRIPT_ID}-mod-construtor`).checked,
@@ -752,6 +779,30 @@ console.log('[🏰 UpVillage] Script carregando...');
         });
         document.getElementById(`${SCRIPT_ID}-import-btn`).addEventListener('click', () => {
             alert('Decoder do template do Account Manager ainda não implementado. Vai estar na próxima versão.');
+        });
+        document.getElementById(`${SCRIPT_ID}-test-webhook`).addEventListener('click', () => {
+            const url = document.getElementById(`${SCRIPT_ID}-webhook`).value.trim();
+            if (!/^https:\/\/discord\.com\/api\/webhooks\//.test(url)) {
+                alert('URL inválida. Deve começar com https://discord.com/api/webhooks/');
+                return;
+            }
+            try {
+                GM_xmlhttpRequest({
+                    method: 'POST',
+                    url,
+                    headers: { 'Content-Type': 'application/json' },
+                    data: JSON.stringify({
+                        content: `✅ Teste do webhook UpVillage v${SCRIPT_VERSION} — ${new Date().toLocaleString()}`
+                    }),
+                    onload: (res) => {
+                        if (res.status >= 200 && res.status < 300) alert('Enviado! Confere o canal do Discord.');
+                        else alert(`Falhou: HTTP ${res.status}\n${res.responseText.slice(0, 200)}`);
+                    },
+                    onerror: () => alert('Erro de rede ao testar webhook.'),
+                });
+            } catch (e) {
+                alert('Exception: ' + e.message);
+            }
         });
     }
 
