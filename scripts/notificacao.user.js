@@ -265,6 +265,7 @@
             const newCfg = readModalToConfig();
             setConfig(newCfg);
             updateStatusBadges(newCfg);
+            startLoop();
             alert('Configuração salva.');
             closeModal();
         });
@@ -301,6 +302,33 @@
         log('Modal fechado.');
     }
 
+    let loopHandle = null;
+
+    function loopTick() {
+        log('Tick — (detectores entram nas próximas tasks)');
+    }
+
+    function startLoop() {
+        const cfg = getConfig();
+        if (!isDiscordConfigured(cfg) && !isTelegramConfigured(cfg)) {
+            log('Nenhum canal configurado — loop NÃO iniciado.');
+            return;
+        }
+        stopLoop();
+        const ms = Math.max(10, cfg.intervalSec) * 1000;
+        loopHandle = setInterval(loopTick, ms);
+        log(`Loop iniciado (intervalo ${ms}ms).`);
+        loopTick();
+    }
+
+    function stopLoop() {
+        if (loopHandle !== null) {
+            clearInterval(loopHandle);
+            loopHandle = null;
+            log('Loop parado.');
+        }
+    }
+
     function injectButton() {
         if (document.getElementById(`${SCRIPT_ID}-btn`)) return;
 
@@ -328,4 +356,5 @@
     }
 
     injectButton();
+    startLoop();
 })();
