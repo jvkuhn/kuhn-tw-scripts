@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🏰 Up Village TW
 // @namespace    https://github.com/jvkuhn/kuhn-tw-scripts
-// @version      1.3.5
+// @version      1.4.0
 // @description  Automação de evolução de aldeia + recording mode (sniffer de rede) + uso de funções nativas do TW
 // @author       jvkuhn
 // @include      https://*.tribalwars.com.br/*
@@ -21,7 +21,7 @@ console.log('[🏰 UpVillage] Script carregando...');
     'use strict';
 
     const SCRIPT_ID = 'kuhn-village';
-    const SCRIPT_VERSION = '1.3.5';
+    const SCRIPT_VERSION = '1.4.0';
 
     // Flags globais — atualizadas ao ler/salvar config
     let debugEnabled = false;
@@ -429,48 +429,53 @@ console.log('[🏰 UpVillage] Script carregando...');
         const newQuestCount = parseInt(game_data.player.new_quest, 10) || 0;
         if (newQuestCount <= 0) return;
 
-        log(`Quest: ${newQuestCount} pendente(s), buscando IDs...`);
-        const html = await twFetch(buildUrl('new_quests'));
-        if (typeof html !== 'string') {
-            log(`Quest: response não é string (tipo: ${typeof html}). Body: ${JSON.stringify(html).slice(0, 200)}`);
-            return;
-        }
-        log(`Quest: HTML tem ${html.length} chars. Snippet: ${html.slice(0, 300).replace(/\s+/g, ' ')}`);
+        log(`Quest: ${newQuestCount} pendente(s)...`);
 
-        // Extrai quest IDs e questline IDs do HTML retornado
-        const questIds = new Set();
-        const questlineIds = new Set();
-        let m;
-        const reQuestData = /data-quest[-_]?id\s*=\s*["'](\d+)["']/gi;
-        const reQuestUrl = /[?&]quest=(\d+)/g;
-        const reQuestlineData = /data-questline[-_]?id\s*=\s*["'](\d+)["']/gi;
-        const reQuestlineUrl = /questline_complete[^"'\s]*[?&]id=(\d+)/gi;
-
-        while ((m = reQuestData.exec(html)) !== null) questIds.add(m[1]);
-        while ((m = reQuestUrl.exec(html)) !== null) questIds.add(m[1]);
-        while ((m = reQuestlineData.exec(html)) !== null) questlineIds.add(m[1]);
-        while ((m = reQuestlineUrl.exec(html)) !== null) questlineIds.add(m[1]);
-
-        // Fallback: se não achar questline ID, tenta id=1 (mais comum no início)
-        if (questlineIds.size === 0) questlineIds.add('1');
-
-        if (questIds.size === 0) {
-            log('Quest: nenhum ID de missão encontrado no HTML.');
+        // Formato descoberto via sniffer (v1.4.0):
+        //  GET  /game.php?...&screen=new_quests&ajax=quest_popup&tab=main-tab&quest=0
+        //       → retorna JSON { response: { dialog: "HTML", rewards: [...] } }
+        //  POST /game.php?...&screen=new_quests&ajax=claim_reward
+        //       body: reward_id=<id>&h=<csrf>
+        const popup = await twFetch(buildUrl('new_quests', { ajax: 'quest_popup', tab: 'main-tab', quest: '0' }));
+        if (!popup || typeof popup !== 'object' || !popup.response) {
+            log('Quest: popup response inesperado.', typeof popup === 'string' ? popup.slice(0, 200) : JSON.stringify(popup).slice(0, 200));
             return;
         }
 
-        // Passo 1: completa cada missão (quest_complete)
-        for (const id of questIds) {
-            const url = buildUrl('api', { ajaxaction: 'quest_complete', quest: id, skip: 'false' });
-            const r = await twFetch(url, { method: 'POST' });
-            log(`Quest ${id} complete →`, r === null ? 'FAIL' : 'OK');
+        // Extrai IDs de reward: primeiro de response.rewards se existir, depois do dialog HTML
+        const rewardIds = new Set();
+        const rewardsArr = popup.response.rewards;
+        if (Array.isArray(rewardsArr)) {
+            for (const r of rewardsArr) {
+                if (r && r.id && (r.status === 'unlocked' || r.status === 'available')) {
+                    rewardIds.add(String(r.id));
+                }
+            }
+        }
+        // Fallback: parse do dialog HTML
+        if (rewardIds.size === 0 && typeof popup.response.dialog === 'string') {
+            const d = popup.response.dialog;
+            const re = /(?:data-reward[-_]?id|reward[-_]?id["']?\s*[:=]\s*["']?)(\d+)/gi;
+            let m;
+            while ((m = re.exec(d)) !== null) rewardIds.add(m[1]);
         }
 
-        // Passo 2: resgata recompensa de cada questline (questline_complete)
-        for (const id of questlineIds) {
-            const url = buildUrl('new_quests', { ajax: 'questline_complete', id: id });
-            const r = await twFetch(url, { method: 'POST' });
-            log(`Questline ${id} resgate →`, r === null ? 'FAIL' : 'OK');
+        if (rewardIds.size === 0) {
+            log('Quest: popup carregado mas nenhuma recompensa no estado "unlocked".');
+            return;
+        }
+
+        log(`Quest: ${rewardIds.size} recompensa(s) pra resgatar: ${[...rewardIds].join(', ')}`);
+        const url = buildUrl('new_quests', { ajax: 'claim_reward' });
+        for (const id of rewardIds) {
+            const body = new URLSearchParams({ reward_id: id, h: game_data.csrf }).toString();
+            const r = await twFetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body,
+            });
+            const ok = r && r.response !== undefined && !r.error;
+            log(`Reward ${id} → ${ok ? 'OK' : 'FAIL'} ${typeof r === 'object' ? JSON.stringify(r).slice(0, 150) : ''}`);
         }
     }
 
@@ -487,23 +492,24 @@ console.log('[🏰 UpVillage] Script carregando...');
     }
 
     async function tryUpgrade(buildingType) {
-        // Tentativa 1: usar BuildingMain.upgrade() nativo do TW (se disponível na página)
-        try {
-            const bm = (typeof unsafeWindow !== 'undefined') ? unsafeWindow.BuildingMain : window.BuildingMain;
-            if (bm && typeof bm.upgrade === 'function') {
-                log(`tryUpgrade(${buildingType}) → usando BuildingMain.upgrade nativo`);
-                bm.upgrade(buildingType);
-                return { source: 'native', ok: true };
-            }
-        } catch (e) {
-            log(`BuildingMain.upgrade(${buildingType}) lançou: ${e.message}`);
-        }
-
-        // Tentativa 2: fetch direto pra API
-        const url = buildUrl('main', { ajaxaction: 'upgrade_building', type: buildingType, h: game_data.csrf });
-        const result = await twFetch(url, { method: 'POST' });
-        log(`tryUpgrade(${buildingType}) → URL: ${url}`);
-        log(`tryUpgrade(${buildingType}) → response: ${typeof result === 'string' ? result.slice(0, 300) : JSON.stringify(result).slice(0, 300)}`);
+        // Formato descoberto via sniffer (v1.4.0):
+        //  URL:    screen=main&ajaxaction=upgrade_building&type=main
+        //  Body:   id=<building>&force=1&destroy=0&source=<village_id>&h=<csrf>
+        //  Headers: application/x-www-form-urlencoded
+        const url = buildUrl('main', { ajaxaction: 'upgrade_building', type: 'main' });
+        const body = new URLSearchParams({
+            id: buildingType,
+            force: '1',
+            destroy: '0',
+            source: String(game_data.village.id),
+            h: game_data.csrf,
+        }).toString();
+        const result = await twFetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body,
+        });
+        log(`tryUpgrade(${buildingType}) → ${typeof result === 'string' ? result.slice(0, 200) : JSON.stringify(result).slice(0, 200)}`);
         return result;
     }
 
@@ -543,10 +549,17 @@ console.log('[🏰 UpVillage] Script carregando...');
         const current = getCurrentLevel(next.building);
         log(`Construtor: ${buildingDisplayName(next.building)} ${current}→${next.target}, tentando upar...`);
         const result = await tryUpgrade(next.building);
-        if (result && (typeof result === 'object' ? !result.error : true)) {
-            log(`Construtor: ${buildingDisplayName(next.building)} enfileirado.`);
+        // Formato de sucesso conhecido: {"response":{"success":"...","date_complete":...}}
+        // Formato de erro: {"response":{"error":"..."}} ou {"error":"..."} ou null
+        const isSuccess = result
+            && ((result.response && result.response.success)
+                || (typeof result === 'object' && !result.error && !(result.response && result.response.error)));
+        if (isSuccess) {
+            const msg = result.response && result.response.success ? result.response.success : 'enfileirado';
+            log(`Construtor: ${buildingDisplayName(next.building)} — ${msg}`);
         } else {
-            log(`Construtor: ${buildingDisplayName(next.building)} falhou (recursos? requisitos?). Tenta de novo no próximo tick.`);
+            const err = (result && result.response && result.response.error) || (result && result.error) || 'response vazio';
+            log(`Construtor: ${buildingDisplayName(next.building)} falhou — ${err}`);
         }
     }
 
