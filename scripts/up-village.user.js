@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🏰 Up Village TW
 // @namespace    https://github.com/jvkuhn/kuhn-tw-scripts
-// @version      1.5.0
+// @version      1.6.0
 // @description  Automação de evolução de aldeia + recording mode (sniffer de rede) + uso de funções nativas do TW
 // @author       jvkuhn
 // @include      https://*.tribalwars.com.br/*
@@ -21,7 +21,61 @@ console.log('[🏰 UpVillage] Script carregando...');
     'use strict';
 
     const SCRIPT_ID = 'kuhn-village';
-    const SCRIPT_VERSION = '1.5.0';
+    const SCRIPT_VERSION = '1.6.0';
+
+    // =====================================================================
+    // BUILDING COSTS — fórmulas públicas TW BR (cost = base * factor^(N-1))
+    // Pode variar levemente por mundo; serve pra pré-check, não decisão final.
+    // =====================================================================
+    const BUILDING_COSTS = {
+        main:       { wood: 90,    stone: 80,    iron: 70,    pop: 5,  factor: 1.26 },
+        barracks:   { wood: 200,   stone: 170,   iron: 90,    pop: 7,  factor: 1.26 },
+        stable:     { wood: 270,   stone: 240,   iron: 260,   pop: 8,  factor: 1.26 },
+        garage:     { wood: 300,   stone: 240,   iron: 260,   pop: 8,  factor: 1.26 },
+        smith:      { wood: 220,   stone: 180,   iron: 240,   pop: 20, factor: 1.26 },
+        place:      { wood: 10,    stone: 40,    iron: 30,    pop: 0,  factor: 1.26 },
+        statue:     { wood: 220,   stone: 220,   iron: 220,   pop: 10, factor: 1.55 },
+        market:     { wood: 100,   stone: 100,   iron: 100,   pop: 20, factor: 1.26 },
+        wood:       { wood: 50,    stone: 60,    iron: 40,    pop: 5,  factor: 1.25 },
+        stone:      { wood: 65,    stone: 50,    iron: 40,    pop: 10, factor: 1.27 },
+        iron:       { wood: 75,    stone: 65,    iron: 70,    pop: 10, factor: 1.252 },
+        farm:       { wood: 45,    stone: 40,    iron: 30,    pop: 0,  factor: 1.3 },
+        storage:    { wood: 60,    stone: 50,    iron: 40,    pop: 0,  factor: 1.265 },
+        hide:       { wood: 50,    stone: 60,    iron: 50,    pop: 2,  factor: 1.25 },
+        wall:       { wood: 50,    stone: 100,   iron: 20,    pop: 5,  factor: 1.26 },
+        snob:       { wood: 15000, stone: 25000, iron: 10000, pop: 80, factor: 2.0 },
+        church:     { wood: 16000, stone: 20000, iron: 5000,  pop: 45, factor: 1.26 },
+        church_f:   { wood: 0,     stone: 0,     iron: 0,     pop: 0,  factor: 1 },
+        watchtower: { wood: 12000, stone: 14000, iron: 12000, pop: 30, factor: 1.17 },
+    };
+
+    function getCostForLevel(buildingId, targetLevel) {
+        const cfg = BUILDING_COSTS[buildingId];
+        if (!cfg || targetLevel < 1) return null;
+        const exp = targetLevel - 1;
+        return {
+            wood: Math.round(cfg.wood * Math.pow(cfg.factor, exp)),
+            stone: Math.round(cfg.stone * Math.pow(cfg.factor, exp)),
+            iron: Math.round(cfg.iron * Math.pow(cfg.factor, exp)),
+            pop: Math.round(cfg.pop * Math.pow(cfg.factor, exp)),
+        };
+    }
+
+    function canAfford(cost) {
+        if (typeof game_data === 'undefined' || !game_data.village) return { ok: false, missing: 'sem game_data' };
+        const v = game_data.village;
+        const haveWood = parseInt(v.wood, 10) || 0;
+        const haveStone = parseInt(v.stone, 10) || 0;
+        const haveIron = parseInt(v.iron, 10) || 0;
+        const popFree = (parseInt(v.pop_max, 10) || 0) - (parseInt(v.pop, 10) || 0);
+        const missing = [];
+        if (cost.wood > haveWood) missing.push(`madeira ${cost.wood - haveWood}`);
+        if (cost.stone > haveStone) missing.push(`pedra ${cost.stone - haveStone}`);
+        if (cost.iron > haveIron) missing.push(`ferro ${cost.iron - haveIron}`);
+        if (cost.pop > popFree) missing.push(`pop ${cost.pop - popFree}`);
+        return { ok: missing.length === 0, missing: missing.join(', ') };
+    }
+    // =====================================================================
 
     // =====================================================================
     // TW ACTIONS CATALOG — auto-identifica ação capturada pela URL
@@ -672,7 +726,17 @@ console.log('[🏰 UpVillage] Script carregando...');
         }
 
         const current = getCurrentLevel(next.building);
-        log(`Construtor: ${buildingDisplayName(next.building)} ${current}→${next.target}, tentando upar...`);
+        const targetNextLevel = current + 1;
+        // Pre-check de recursos (evita tentativa fadada ao fracasso)
+        const cost = getCostForLevel(next.building, targetNextLevel);
+        if (cost) {
+            const aff = canAfford(cost);
+            if (!aff.ok) {
+                log(`Construtor: ${buildingDisplayName(next.building)} ${current}→${targetNextLevel} faltando ${aff.missing} (custo: M${cost.wood}/A${cost.stone}/F${cost.iron}/Pop${cost.pop}). Aguardando recursos.`);
+                return;
+            }
+        }
+        log(`Construtor: ${buildingDisplayName(next.building)} ${current}→${targetNextLevel}, tentando upar...`);
         const result = await tryUpgrade(next.building);
         // Formato de sucesso conhecido: {"response":{"success":"...","date_complete":...}}
         // Formato de erro: {"response":{"error":"..."}} ou {"error":"..."} ou null
@@ -755,6 +819,7 @@ console.log('[🏰 UpVillage] Script carregando...');
                                     <th style="padding:4px;">Prédio</th>
                                     <th style="padding:4px;width:90px;">Alvo</th>
                                     <th style="padding:4px;width:60px;">Atual</th>
+                                    <th style="padding:4px;width:140px;font-size:11px;">Custo p/ próx</th>
                                     <th style="padding:4px;width:90px;">Ações</th>
                                 </tr>
                             </thead>
@@ -798,6 +863,13 @@ console.log('[🏰 UpVillage] Script carregando...');
         tbody.innerHTML = hudPlan.map((item, idx) => {
             const current = getCurrentLevel(item.building);
             const reachedClass = current >= item.target ? 'color:#888;text-decoration:line-through;' : '';
+            // Custo do próximo nível
+            const nextLvl = current + 1;
+            const cost = nextLvl <= item.target ? getCostForLevel(item.building, nextLvl) : null;
+            const aff = cost ? canAfford(cost) : null;
+            const costCell = cost
+                ? `<span style="${aff && aff.ok ? 'color:#2a8a2a' : 'color:#a00'};font-size:11px;">M${cost.wood} A${cost.stone} F${cost.iron}${cost.pop ? ` P${cost.pop}` : ''}</span>`
+                : '<span style="color:#888;">—</span>';
             return `
                 <tr style="${reachedClass}">
                     <td style="padding:3px;text-align:center;">${idx + 1}</td>
@@ -810,6 +882,7 @@ console.log('[🏰 UpVillage] Script carregando...');
                         <input type="number" data-row="${idx}" class="${SCRIPT_ID}-row-target" min="1" max="30" value="${item.target}" style="width:60px;">
                     </td>
                     <td style="padding:3px;text-align:center;">${current}</td>
+                    <td style="padding:3px;text-align:center;">${costCell}</td>
                     <td style="padding:3px;text-align:center;">
                         <button data-row="${idx}" class="${SCRIPT_ID}-row-up" title="Mover pra cima">↑</button>
                         <button data-row="${idx}" class="${SCRIPT_ID}-row-down" title="Mover pra baixo">↓</button>
