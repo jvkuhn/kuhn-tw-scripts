@@ -11,7 +11,8 @@ Userscripts open-source para Tribal Wars (servidores BR), feitos para Tampermonk
 
 | Script | Descrição | Instalar |
 |---|---|---|
-| 🔔 [Notificação](docs/notificacao.md) | Envia alertas Discord/Telegram para ataques chegando e captcha | [Instalar](https://raw.githubusercontent.com/jvkuhn/kuhn-tw-scripts/main/scripts/notificacao.user.js) |
+| 🔔 [Notificação](docs/notificacao.md) | Envia alertas Discord/Telegram para ataques chegando, captcha e mensagens novas | [Instalar](https://raw.githubusercontent.com/jvkuhn/kuhn-tw-scripts/main/scripts/notificacao.user.js) |
+| 🎯 Auto Quest | Auto-clica botões de aceitar/concluir/resgatar missões e recompensas | [Instalar](https://raw.githubusercontent.com/jvkuhn/kuhn-tw-scripts/main/scripts/auto-quest.user.js) |
 
 ## Instalação
 
