@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🏰 Up Village TW
 // @namespace    https://github.com/jvkuhn/kuhn-tw-scripts
-// @version      1.3.2
+// @version      1.3.3
 // @description  Automação de evolução de aldeia + recording mode (sniffer de rede) + uso de funções nativas do TW
 // @author       jvkuhn
 // @include      https://*.tribalwars.com.br/*
@@ -21,7 +21,7 @@ console.log('[🏰 UpVillage] Script carregando...');
     'use strict';
 
     const SCRIPT_ID = 'kuhn-village';
-    const SCRIPT_VERSION = '1.3.2';
+    const SCRIPT_VERSION = '1.3.3';
 
     // Flags globais — atualizadas ao ler/salvar config
     let debugEnabled = false;
@@ -134,6 +134,31 @@ console.log('[🏰 UpVillage] Script carregando...');
 
     // Instala sniffer via unsafeWindow (sem injetar <script>, evita CSP)
     try { installSniffer(); } catch (e) { console.error('[🏰 UpVillage] installSniffer falhou:', e); }
+
+    // Auto-teste do sniffer: faz uma chamada GET trivial pro próprio TW e checa se o sniffer pegou.
+    // Se pegou: confirma sniffer funcional. Se não: algo bloqueou e devolve aviso claro.
+    setTimeout(() => {
+        const eventsBefore = snifEventsTotal;
+        const testUrl = `${location.pathname}?screen=overview&_kuhn_test=1`;
+        console.log('[🏰 UpVillage] Auto-teste sniffer: enviando GET trivial pra', testUrl);
+        const W = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
+        try {
+            W.fetch(testUrl, { credentials: 'include' })
+                .then(() => {
+                    setTimeout(() => {
+                        const eventsAfter = snifEventsTotal;
+                        if (eventsAfter > eventsBefore) {
+                            console.log(`%c[🏰 UpVillage] ✅ Sniffer FUNCIONANDO — capturou ${eventsAfter - eventsBefore} evento(s) do auto-teste.`, 'color: green; font-weight: bold;');
+                        } else {
+                            console.error('%c[🏰 UpVillage] ❌ Sniffer NÃO capturou o auto-teste. fetch override pode não estar ativo no contexto correto.', 'color: red; font-weight: bold;');
+                        }
+                    }, 1500);
+                })
+                .catch(err => console.error('[🏰 UpVillage] Auto-teste falhou:', err));
+        } catch (e) {
+            console.error('[🏰 UpVillage] Auto-teste exception:', e);
+        }
+    }, 2000);
     // =====================================================================
 
     // Mover ALIASES pra cá (era declarado depois — causava TDZ na migração de config antiga)
