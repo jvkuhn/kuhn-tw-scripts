@@ -1,36 +1,45 @@
 // ==UserScript==
-// @name         🎯 Auto Quest TW
+// @name         🏰 Up Village TW
 // @namespace    https://github.com/jvkuhn/kuhn-tw-scripts
-// @version      0.2.0
-// @description  Auto-clicar botões de aceitar/concluir/resgatar missões e recompensas no Tribal Wars BR
+// @version      0.3.0
+// @description  Automação de evolução de aldeia no Tribal Wars BR (claim de missões/recompensas; futuras: construção, recrutamento, coleta)
 // @author       jvkuhn
 // @include      https://*.tribalwars.com.br/*
 // @include      **game*
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @run-at       document-idle
-// @downloadURL  https://raw.githubusercontent.com/jvkuhn/kuhn-tw-scripts/main/scripts/auto-quest.user.js
-// @updateURL    https://raw.githubusercontent.com/jvkuhn/kuhn-tw-scripts/main/scripts/auto-quest.user.js
+// @downloadURL  https://raw.githubusercontent.com/jvkuhn/kuhn-tw-scripts/main/scripts/up-village.user.js
+// @updateURL    https://raw.githubusercontent.com/jvkuhn/kuhn-tw-scripts/main/scripts/up-village.user.js
 // ==/UserScript==
 
-console.log('[🎯 AutoQuest] Script carregando...');
+console.log('[🏰 UpVillage] Script carregando...');
 (function () {
     'use strict';
 
-    const SCRIPT_ID = 'kuhn-quest';
-    const log = (...args) => console.log('[🎯 AutoQuest]', ...args);
-    log('IIFE iniciada — versão 0.2.0');
+    const SCRIPT_ID = 'kuhn-village';
+    const log = (...args) => console.log('[🏰 UpVillage]', ...args);
+    log('IIFE iniciada — versão 0.3.0');
 
-    const ENABLED_KEY = 'kuhn-quest-enabled';
+    const ENABLED_KEY = 'kuhn-village-enabled';
     const TICK_MS = 4000;
 
-    // Sequência: PRIMEIRO clica no botão dentro do popup (resgatar recompensa),
-    // SEGUNDO clica no ícone de quest pendente (abre o popup).
-    // Ordem importa: se popup aberto, prioriza resgatar; se fechado, abre.
-    const SELECTORS = [
+    // =====================================================================
+    // MÓDULO 1: AUTO-QUEST (resgatar missões/recompensas)
+    // Sequência: clica no popup pra resgatar; se popup fechado, abre.
+    // Ordem importa: '.quest-complete-btn' antes de '#new_quest'.
+    // =====================================================================
+    const QUEST_SELECTORS = [
         '.quest-complete-btn',  // botão verde "Concluir/Resgatar" dentro do popup
         '#new_quest',           // ícone de quest pendente (abre popup)
     ];
+
+    // =====================================================================
+    // MÓDULOS FUTUROS (a implementar):
+    // - Auto Construtor: fila de construção baseada em plano
+    // - Auto Coleta: pegar recursos da coleta a cada X horas
+    // - Auto Recrutamento: manter tropas-alvo treinando
+    // =====================================================================
 
     function isEnabled() {
         return GM_getValue(ENABLED_KEY, false) === true;
@@ -48,23 +57,30 @@ console.log('[🎯 AutoQuest] Script carregando...');
         return rect.width > 0 && rect.height > 0;
     }
 
-    function tick() {
-        if (!isEnabled()) return;
-        for (const sel of SELECTORS) {
+    function tryClick(selectors, label) {
+        for (const sel of selectors) {
             const el = document.querySelector(sel);
             if (el && isVisible(el)) {
-                log('Clicando:', sel);
+                log(`[${label}] Clicando:`, sel);
                 el.click();
-                return; // 1 clique por tick pra evitar spam
+                return true;
             }
         }
+        return false;
+    }
+
+    function tick() {
+        if (!isEnabled()) return;
+        // Módulo 1: quest
+        if (tryClick(QUEST_SELECTORS, 'quest')) return;
+        // (futuros módulos entram aqui)
     }
 
     function updateButton() {
         const btn = document.getElementById(`${SCRIPT_ID}-btn`);
         if (!btn) return;
         const on = isEnabled();
-        btn.textContent = on ? '🎯 ON' : '🎯 OFF';
+        btn.textContent = on ? '🏰 ON' : '🏰 OFF';
         btn.style.background = on ? '#2a8a2a' : '#666';
     }
 
@@ -72,7 +88,7 @@ console.log('[🎯 AutoQuest] Script carregando...');
         if (document.getElementById(`${SCRIPT_ID}-btn`)) return;
         const btn = document.createElement('div');
         btn.id = `${SCRIPT_ID}-btn`;
-        btn.title = 'Auto Quest — clique para ligar/desligar';
+        btn.title = 'Up Village — clique para ligar/desligar evolução automática';
         Object.assign(btn.style, {
             position: 'fixed',
             top: '270px',

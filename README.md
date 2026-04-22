@@ -12,7 +12,7 @@ Userscripts open-source para Tribal Wars (servidores BR), feitos para Tampermonk
 | Script | Descrição | Instalar |
 |---|---|---|
 | 🔔 [Notificação](docs/notificacao.md) | Envia alertas Discord/Telegram para ataques chegando, captcha e mensagens novas | [Instalar](https://raw.githubusercontent.com/jvkuhn/kuhn-tw-scripts/main/scripts/notificacao.user.js) |
-| 🎯 Auto Quest | Auto-clica botões de aceitar/concluir/resgatar missões e recompensas | [Instalar](https://raw.githubusercontent.com/jvkuhn/kuhn-tw-scripts/main/scripts/auto-quest.user.js) |
+| 🏰 Up Village | Automação de evolução de aldeia — começando com claim de missões/recompensas (mais módulos vindo: construtor, coleta, recrutamento) | [Instalar](https://raw.githubusercontent.com/jvkuhn/kuhn-tw-scripts/main/scripts/up-village.user.js) |
 
 ## Instalação
 
