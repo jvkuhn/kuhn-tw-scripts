@@ -61,6 +61,96 @@
         return Boolean(cfg.telegramBotToken && cfg.telegramChatId);
     }
 
+    const DEDUPE_KEY = 'kuhn-notif-dedupe';
+    const DEDUPE_TTL_MS = 10 * 60 * 1000;
+
+    function getDedupeMap() {
+        const raw = GM_getValue(DEDUPE_KEY, null);
+        if (!raw) return {};
+        try {
+            return typeof raw === 'string' ? JSON.parse(raw) : raw;
+        } catch {
+            return {};
+        }
+    }
+
+    function pruneDedupeMap(map) {
+        const now = Date.now();
+        const out = {};
+        for (const [k, expiry] of Object.entries(map)) {
+            if (expiry > now) out[k] = expiry;
+        }
+        return out;
+    }
+
+    function eventHash(eventType, eventId) {
+        return `${eventType}::${eventId}`;
+    }
+
+    function wasRecentlyNotified(hash) {
+        const map = pruneDedupeMap(getDedupeMap());
+        return Boolean(map[hash]);
+    }
+
+    function markNotified(hash) {
+        const map = pruneDedupeMap(getDedupeMap());
+        map[hash] = Date.now() + DEDUPE_TTL_MS;
+        GM_setValue(DEDUPE_KEY, JSON.stringify(map));
+    }
+
+    function sendDiscord(webhookUrl, title, message, onResult) {
+        const payload = buildDiscordPayload(title, message);
+        GM_xmlhttpRequest({
+            method: 'POST',
+            url: webhookUrl,
+            headers: { 'Content-Type': 'application/json' },
+            data: JSON.stringify(payload),
+            onload: (res) => {
+                if (res.status >= 200 && res.status < 300) onResult(null);
+                else onResult(new Error(`Discord HTTP ${res.status}: ${res.responseText.slice(0, 100)}`));
+            },
+            onerror: () => onResult(new Error('Discord network error')),
+        });
+    }
+
+    function sendTelegram(token, chatId, title, message, onResult) {
+        const url = buildTelegramUrl(token, chatId, title, message);
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url,
+            onload: (res) => {
+                if (res.status >= 200 && res.status < 300) onResult(null);
+                else onResult(new Error(`Telegram HTTP ${res.status}: ${res.responseText.slice(0, 100)}`));
+            },
+            onerror: () => onResult(new Error('Telegram network error')),
+        });
+    }
+
+    function notify(title, message, eventType, eventId) {
+        const hash = eventHash(eventType, eventId);
+        if (wasRecentlyNotified(hash)) {
+            log('Dedupe — já notificado:', hash);
+            return;
+        }
+        markNotified(hash);
+
+        const cfg = getConfig();
+
+        if (isDiscordConfigured(cfg)) {
+            sendDiscord(cfg.discordWebhookUrl, title, message, (err) => {
+                if (err) log('Erro Discord:', err.message);
+                else log('Discord enviado:', title);
+            });
+        }
+
+        if (isTelegramConfigured(cfg)) {
+            sendTelegram(cfg.telegramBotToken, cfg.telegramChatId, title, message, (err) => {
+                if (err) log('Erro Telegram:', err.message);
+                else log('Telegram enviado:', title);
+            });
+        }
+    }
+
     function buildDiscordPayload(title, message) {
         return {
             username: '🔔 TW Notif',
@@ -177,6 +267,29 @@
             updateStatusBadges(newCfg);
             alert('Configuração salva.');
             closeModal();
+        });
+
+        document.getElementById(`${SCRIPT_ID}-test-discord`).addEventListener('click', () => {
+            const url = document.getElementById(`${SCRIPT_ID}-discord-url`).value.trim();
+            if (!/^https:\/\/discord\.com\/api\/webhooks\//.test(url)) {
+                alert('Webhook inválido. Cole a URL completa do webhook do Discord.');
+                return;
+            }
+            sendDiscord(url, 'Teste', 'Mensagem de teste do kuhn-tw-scripts', (err) => {
+                alert(err ? `Falhou: ${err.message}` : 'Enviado! Verifique o canal do Discord.');
+            });
+        });
+
+        document.getElementById(`${SCRIPT_ID}-test-telegram`).addEventListener('click', () => {
+            const token = document.getElementById(`${SCRIPT_ID}-tg-token`).value.trim();
+            const chatId = document.getElementById(`${SCRIPT_ID}-tg-chatid`).value.trim();
+            if (!token || !chatId) {
+                alert('Preencha token e chat ID antes de testar.');
+                return;
+            }
+            sendTelegram(token, chatId, 'Teste', 'Mensagem de teste do kuhn-tw-scripts', (err) => {
+                alert(err ? `Falhou: ${err.message}` : 'Enviado! Verifique o Telegram.');
+            });
         });
 
         log('Modal aberto.');
