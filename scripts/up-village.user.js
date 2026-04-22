@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🏰 Up Village TW
 // @namespace    https://github.com/jvkuhn/kuhn-tw-scripts
-// @version      1.2.3
+// @version      1.2.4
 // @description  Automação de evolução de aldeia em background — quest claim, construtor com plano visual (sem precisar de Premium AM)
 // @author       jvkuhn
 // @include      https://*.tribalwars.com.br/*
@@ -20,7 +20,7 @@ console.log('[🏰 UpVillage] Script carregando...');
     'use strict';
 
     const SCRIPT_ID = 'kuhn-village';
-    const SCRIPT_VERSION = '1.2.3';
+    const SCRIPT_VERSION = '1.2.4';
 
     // Flag global pra evitar recursão entre log() ↔ getConfig()
     // Atualizada quando config é lida/salva. Default false (sem debug).
@@ -281,7 +281,11 @@ console.log('[🏰 UpVillage] Script carregando...');
 
         log(`Quest: ${newQuestCount} pendente(s), buscando IDs...`);
         const html = await twFetch(buildUrl('new_quests'));
-        if (typeof html !== 'string') return;
+        if (typeof html !== 'string') {
+            log(`Quest: response não é string (tipo: ${typeof html}). Body: ${JSON.stringify(html).slice(0, 200)}`);
+            return;
+        }
+        log(`Quest: HTML tem ${html.length} chars. Snippet: ${html.slice(0, 300).replace(/\s+/g, ' ')}`);
 
         // Extrai quest IDs e questline IDs do HTML retornado
         const questIds = new Set();
@@ -334,7 +338,10 @@ console.log('[🏰 UpVillage] Script carregando...');
 
     async function tryUpgrade(buildingType) {
         const url = buildUrl('main', { ajaxaction: 'upgrade_building', type: buildingType, h: game_data.csrf });
-        return await twFetch(url, { method: 'POST' });
+        const result = await twFetch(url, { method: 'POST' });
+        log(`tryUpgrade(${buildingType}) → URL: ${url}`);
+        log(`tryUpgrade(${buildingType}) → response: ${typeof result === 'string' ? result.slice(0, 300) : JSON.stringify(result).slice(0, 300)}`);
+        return result;
     }
 
     function getNextPlannedBuilding(plan) {
