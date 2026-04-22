@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🏰 Up Village TW
 // @namespace    https://github.com/jvkuhn/kuhn-tw-scripts
-// @version      1.6.0
+// @version      1.7.0
 // @description  Automação de evolução de aldeia + recording mode (sniffer de rede) + uso de funções nativas do TW
 // @author       jvkuhn
 // @include      https://*.tribalwars.com.br/*
@@ -21,7 +21,7 @@ console.log('[🏰 UpVillage] Script carregando...');
     'use strict';
 
     const SCRIPT_ID = 'kuhn-village';
-    const SCRIPT_VERSION = '1.6.0';
+    const SCRIPT_VERSION = '1.7.0';
 
     // =====================================================================
     // BUILDING COSTS — fórmulas públicas TW BR (cost = base * factor^(N-1))
@@ -1040,6 +1040,74 @@ console.log('[🏰 UpVillage] Script carregando...');
         btn.style.background = cfg.enabled ? '#2a8a2a' : '#666';
     }
 
+    // =====================================================================
+    // STATUS PANEL — widget flutuante sempre visível com info da aldeia
+    // =====================================================================
+    function injectStatusPanel() {
+        if (document.getElementById(`${SCRIPT_ID}-status`)) return;
+        const panel = document.createElement('div');
+        panel.id = `${SCRIPT_ID}-status`;
+        Object.assign(panel.style, {
+            position: 'fixed',
+            bottom: '8px',
+            left: '8px',
+            background: 'rgba(243,228,188,0.95)',
+            border: '2px solid #603000',
+            borderRadius: '6px',
+            padding: '6px 10px',
+            zIndex: '99999',
+            fontFamily: 'Verdana,sans-serif',
+            fontSize: '11px',
+            color: '#000',
+            boxShadow: '0 2px 6px rgba(0,0,0,0.4)',
+            minWidth: '200px',
+            maxWidth: '320px',
+            userSelect: 'none',
+        });
+        document.body.appendChild(panel);
+        updateStatusPanel();
+    }
+
+    function updateStatusPanel() {
+        const panel = document.getElementById(`${SCRIPT_ID}-status`);
+        if (!panel) return;
+        if (typeof game_data === 'undefined' || !game_data.village) {
+            panel.innerHTML = `<b>🏰 UpVillage v${SCRIPT_VERSION}</b><br>Esperando game_data...`;
+            return;
+        }
+        const v = game_data.village;
+        const p = game_data.player;
+        const cfg = getConfig();
+
+        // Próxima ação do plano
+        let proxStr = '<span style="color:#888;">plano vazio</span>';
+        const next = getNextPlannedBuilding(cfg.plan || []);
+        if (next) {
+            const cur = getCurrentLevel(next.building);
+            const cost = getCostForLevel(next.building, cur + 1);
+            const aff = cost ? canAfford(cost) : null;
+            const color = aff && aff.ok ? '#2a8a2a' : '#a00';
+            proxStr = `<span style="color:${color};">${buildingDisplayName(next.building)} ${cur}→${cur + 1}${aff && !aff.ok ? ' (faltam ' + aff.missing + ')' : ''}</span>`;
+        } else if (cfg.plan && cfg.plan.length > 0) {
+            proxStr = '<span style="color:#2a8a2a;">✓ plano completo</span>';
+        }
+
+        const masterIcon = cfg.enabled ? '🟢' : '⚪';
+        const recIcon = recordingEnabled ? '🎬' : '';
+        const dbgIcon = debugEnabled ? '🐛' : '';
+
+        panel.innerHTML = `
+            <div style="border-bottom:1px solid #603000;margin-bottom:3px;padding-bottom:2px;">
+                <b>🏰 ${p.name || '?'} (${v.coord || '?'})</b> ${masterIcon}${recIcon}${dbgIcon}
+            </div>
+            <div>🌲 ${Math.floor(v.wood)} 🪨 ${Math.floor(v.stone)} ⛏️ ${Math.floor(v.iron)} | 👥 ${v.pop}/${v.pop_max}</div>
+            <div>📊 ${p.points} pts | 🏆 #${p.rank} | 📨 ${p.new_report || 0} relatórios | ✉️ ${p.new_igm || 0} msgs</div>
+            <div>🎯 Próx: ${proxStr}</div>
+            ${p.incomings > 0 ? `<div style="color:#a00;font-weight:bold;">⚔️ ${p.incomings} ataques chegando!</div>` : ''}
+        `;
+    }
+    // =====================================================================
+
     function injectButton() {
         if (document.getElementById(`${SCRIPT_ID}-btn`)) return;
         const btn = document.createElement('div');
@@ -1067,6 +1135,8 @@ console.log('[🏰 UpVillage] Script carregando...');
     }
 
     injectButton();
+    injectStatusPanel();
     setInterval(tick, TICK_MS);
+    setInterval(updateStatusPanel, 3000); // status panel refresh independente
     log(`Loop iniciado (${TICK_MS}ms).`);
 })();
