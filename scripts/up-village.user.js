@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🏰 Up Village TW
 // @namespace    https://github.com/jvkuhn/kuhn-tw-scripts
-// @version      1.2.1
+// @version      1.2.2
 // @description  Automação de evolução de aldeia em background — quest claim, construtor com plano visual (sem precisar de Premium AM)
 // @author       jvkuhn
 // @include      https://*.tribalwars.com.br/*
@@ -20,10 +20,32 @@ console.log('[🏰 UpVillage] Script carregando...');
     'use strict';
 
     const SCRIPT_ID = 'kuhn-village';
-    const SCRIPT_VERSION = '1.2.1';
+    const SCRIPT_VERSION = '1.2.2';
 
     const STORAGE_KEY = 'kuhn-village-config';
     const TICK_MS = 8000;
+
+    // Mover ALIASES pra cá (era declarado depois — causava TDZ na migração de config antiga)
+    const ALIASES = {
+        madeireira: 'wood', wood: 'wood', madeira: 'wood',
+        barro: 'stone', argila: 'stone', stone: 'stone', poco: 'stone',
+        ferro: 'iron', iron: 'iron', mina: 'iron',
+        granja: 'farm', farm: 'farm', fazenda: 'farm',
+        armazem: 'storage', storage: 'storage', deposito: 'storage',
+        esconderijo: 'hide', hide: 'hide',
+        muralha: 'wall', wall: 'wall', muro: 'wall',
+        principal: 'main', main: 'main', edificio: 'main',
+        quartel: 'barracks', barracks: 'barracks',
+        estabulo: 'stable', stable: 'stable',
+        oficina: 'garage', garage: 'garage', workshop: 'garage',
+        ferreiro: 'smith', smith: 'smith',
+        praca: 'place', place: 'place', reuniao: 'place',
+        estatua: 'statue', statue: 'statue',
+        mercado: 'market', market: 'market',
+        academia: 'snob', snob: 'snob',
+        igreja: 'church', church: 'church',
+        atalaia: 'watchtower', watchtower: 'watchtower',
+    };
 
     const BUILDINGS = [
         { id: 'main', name: 'Edifício Principal' },
@@ -194,27 +216,6 @@ console.log('[🏰 UpVillage] Script carregando...');
         }
         return plan;
     }
-
-    const ALIASES = {
-        madeireira: 'wood', wood: 'wood', madeira: 'wood',
-        barro: 'stone', argila: 'stone', stone: 'stone', poco: 'stone',
-        ferro: 'iron', iron: 'iron', mina: 'iron',
-        granja: 'farm', farm: 'farm', fazenda: 'farm',
-        armazem: 'storage', storage: 'storage', deposito: 'storage',
-        esconderijo: 'hide', hide: 'hide',
-        muralha: 'wall', wall: 'wall', muro: 'wall',
-        principal: 'main', main: 'main', edificio: 'main',
-        quartel: 'barracks', barracks: 'barracks',
-        estabulo: 'stable', stable: 'stable',
-        oficina: 'garage', garage: 'garage', workshop: 'garage',
-        ferreiro: 'smith', smith: 'smith',
-        praca: 'place', place: 'place', reuniao: 'place',
-        estatua: 'statue', statue: 'statue',
-        mercado: 'market', market: 'market',
-        academia: 'snob', snob: 'snob',
-        igreja: 'church', church: 'church',
-        atalaia: 'watchtower', watchtower: 'watchtower',
-    };
 
     // =====================================================================
     // FETCH HELPERS (TW internal API)
