@@ -21,6 +21,46 @@
     const SCRIPT_ID = 'kuhn-notif';
     const log = (...args) => console.log('[🔔 Notif]', ...args);
 
+    const STORAGE_KEY = 'kuhn-notif-config';
+
+    function getDefaultConfig() {
+        return {
+            discordWebhookUrl: '',
+            telegramBotToken: '',
+            telegramChatId: '',
+            intervalSec: 30,
+            events: {
+                ataqueChegando: true,
+                captcha: true,
+            },
+        };
+    }
+
+    function getConfig() {
+        const raw = GM_getValue(STORAGE_KEY, null);
+        if (!raw) return getDefaultConfig();
+        try {
+            const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            return { ...getDefaultConfig(), ...parsed, events: { ...getDefaultConfig().events, ...(parsed.events || {}) } };
+        } catch (e) {
+            log('Config corrompida, restaurando defaults:', e);
+            return getDefaultConfig();
+        }
+    }
+
+    function setConfig(cfg) {
+        GM_setValue(STORAGE_KEY, JSON.stringify(cfg));
+        log('Config salva:', cfg);
+    }
+
+    function isDiscordConfigured(cfg) {
+        return /^https:\/\/discord\.com\/api\/webhooks\//.test(cfg.discordWebhookUrl || '');
+    }
+
+    function isTelegramConfigured(cfg) {
+        return Boolean(cfg.telegramBotToken && cfg.telegramChatId);
+    }
+
     function injectButton() {
         if (document.getElementById(`${SCRIPT_ID}-btn`)) return;
 
