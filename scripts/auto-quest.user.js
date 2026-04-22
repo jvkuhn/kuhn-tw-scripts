@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🎯 Auto Quest TW
 // @namespace    https://github.com/jvkuhn/kuhn-tw-scripts
-// @version      0.1.0
+// @version      0.2.0
 // @description  Auto-clicar botões de aceitar/concluir/resgatar missões e recompensas no Tribal Wars BR
 // @author       jvkuhn
 // @include      https://*.tribalwars.com.br/*
@@ -19,20 +19,17 @@ console.log('[🎯 AutoQuest] Script carregando...');
 
     const SCRIPT_ID = 'kuhn-quest';
     const log = (...args) => console.log('[🎯 AutoQuest]', ...args);
-    log('IIFE iniciada — versão 0.1.0');
+    log('IIFE iniciada — versão 0.2.0');
 
     const ENABLED_KEY = 'kuhn-quest-enabled';
-    const TICK_MS = 5000;
+    const TICK_MS = 4000;
 
-    // Seletores que o script vai procurar e clicar (em ordem).
-    // Confirmado pelo usuário: .quest-complete-btn
-    // Outros são chutes educados — adicionar/remover conforme descoberto.
+    // Sequência: PRIMEIRO clica no botão dentro do popup (resgatar recompensa),
+    // SEGUNDO clica no ícone de quest pendente (abre o popup).
+    // Ordem importa: se popup aberto, prioriza resgatar; se fechado, abre.
     const SELECTORS = [
-        '.quest-complete-btn',
-        '.quest-accept-btn',
-        '.quest-claim-btn',
-        '.collect-btn',
-        '.claim-btn',
+        '.quest-complete-btn',  // botão verde "Concluir/Resgatar" dentro do popup
+        '#new_quest',           // ícone de quest pendente (abre popup)
     ];
 
     function isEnabled() {
