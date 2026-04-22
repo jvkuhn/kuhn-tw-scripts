@@ -61,6 +61,19 @@
         return Boolean(cfg.telegramBotToken && cfg.telegramChatId);
     }
 
+    function buildDiscordPayload(title, message) {
+        return {
+            username: '🔔 TW Notif',
+            content: `**${title}**\n${message}`,
+        };
+    }
+
+    function buildTelegramUrl(token, chatId, title, message) {
+        const text = `🔔 ${title}\n${message}`;
+        const params = new URLSearchParams({ chat_id: chatId, text });
+        return `https://api.telegram.org/bot${token}/sendMessage?${params.toString()}`;
+    }
+
     function buildModalHtml() {
         return `
             <div id="${SCRIPT_ID}-overlay" style="
