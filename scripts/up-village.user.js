@@ -1,14 +1,15 @@
 // ==UserScript==
 // @name         🏰 Up Village TW
 // @namespace    https://github.com/jvkuhn/kuhn-tw-scripts
-// @version      1.2.4
-// @description  Automação de evolução de aldeia em background — quest claim, construtor com plano visual (sem precisar de Premium AM)
+// @version      1.3.0
+// @description  Automação de evolução de aldeia + recording mode (sniffer de rede) + uso de funções nativas do TW
 // @author       jvkuhn
 // @include      https://*.tribalwars.com.br/*
 // @include      **game*
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_xmlhttpRequest
+// @grant        unsafeWindow
 // @connect      discord.com
 // @run-at       document-idle
 // @downloadURL  https://raw.githubusercontent.com/jvkuhn/kuhn-tw-scripts/main/scripts/up-village.user.js
@@ -20,14 +21,123 @@ console.log('[🏰 UpVillage] Script carregando...');
     'use strict';
 
     const SCRIPT_ID = 'kuhn-village';
-    const SCRIPT_VERSION = '1.2.4';
+    const SCRIPT_VERSION = '1.3.0';
 
-    // Flag global pra evitar recursão entre log() ↔ getConfig()
-    // Atualizada quando config é lida/salva. Default false (sem debug).
+    // Flags globais — atualizadas ao ler/salvar config
     let debugEnabled = false;
+    let recordingEnabled = false;
 
     const STORAGE_KEY = 'kuhn-village-config';
     const TICK_MS = 8000;
+    const SNIFF_FLAG = '__kuhnSnifferInjected_v3';
+
+    // =====================================================================
+    // SNIFFER DE REDE (recording mode)
+    // Injeta override de fetch + XMLHttpRequest no contexto da página.
+    // Comunica com o sandbox via window.postMessage.
+    // Ativa só quando recordingEnabled = true.
+    // =====================================================================
+    function injectSniffer() {
+        if (window[SNIFF_FLAG]) return;
+        window[SNIFF_FLAG] = true;
+        const code = `
+            (function() {
+                if (window.${SNIFF_FLAG}_loaded) return;
+                window.${SNIFF_FLAG}_loaded = true;
+                const TAG = 'KUHN_SNIFF';
+
+                function post(payload) {
+                    window.postMessage({ tag: TAG, payload }, '*');
+                }
+                function trim(s, n) { return s ? String(s).slice(0, n) : ''; }
+                function isGame(url) {
+                    return typeof url === 'string' && url.includes('game.php');
+                }
+
+                const origFetch = window.fetch;
+                window.fetch = function(input, init) {
+                    const url = typeof input === 'string' ? input : (input && input.url) || '';
+                    const method = (init && init.method) || (input && input.method) || 'GET';
+                    const body = trim(init && init.body, 500);
+                    if (!isGame(url)) return origFetch.apply(this, arguments);
+                    const t0 = Date.now();
+                    const promise = origFetch.apply(this, arguments);
+                    promise.then(res => {
+                        res.clone().text().then(text => {
+                            post({
+                                kind: 'fetch',
+                                t: t0,
+                                method,
+                                url: trim(url, 300),
+                                body,
+                                status: res.status,
+                                response: trim(text, 500),
+                            });
+                        }).catch(()=>{});
+                    }).catch(err => {
+                        post({ kind: 'fetch-error', t: t0, method, url: trim(url, 300), error: String(err) });
+                    });
+                    return promise;
+                };
+
+                const origOpen = XMLHttpRequest.prototype.open;
+                const origSend = XMLHttpRequest.prototype.send;
+                XMLHttpRequest.prototype.open = function(method, url) {
+                    this.__kuhnUrl = url;
+                    this.__kuhnMethod = method;
+                    return origOpen.apply(this, arguments);
+                };
+                XMLHttpRequest.prototype.send = function(body) {
+                    if (isGame(this.__kuhnUrl)) {
+                        const t0 = Date.now();
+                        const url = this.__kuhnUrl;
+                        const method = this.__kuhnMethod;
+                        const sentBody = trim(body, 500);
+                        this.addEventListener('load', () => {
+                            post({
+                                kind: 'xhr',
+                                t: t0,
+                                method,
+                                url: trim(url, 300),
+                                body: sentBody,
+                                status: this.status,
+                                response: trim(this.responseText || '', 500),
+                            });
+                        });
+                        this.addEventListener('error', () => {
+                            post({ kind: 'xhr-error', t: t0, method, url: trim(url, 300) });
+                        });
+                    }
+                    return origSend.apply(this, arguments);
+                };
+
+                console.log('[KUHN-SNIFF] Sniffer instalado em fetch + XMLHttpRequest.');
+            })();
+        `;
+        const s = document.createElement('script');
+        s.textContent = code;
+        (document.head || document.documentElement).appendChild(s);
+        s.remove();
+    }
+
+    // Listener no sandbox: recebe eventos do sniffer via postMessage
+    window.addEventListener('message', (e) => {
+        if (!e.data || e.data.tag !== 'KUHN_SNIFF') return;
+        if (!recordingEnabled) return; // só processa se gravação tá ON
+        const p = e.data.payload;
+        if (!p) return;
+        const u = (p.url || '').replace(/^https?:\/\/[^/]+/, '');
+        const summary = `${p.kind.toUpperCase()} ${p.method} ${u} → ${p.status || '?'}`;
+        log(`📡 ${summary}`);
+        if (p.body) log(`   body: ${p.body}`);
+        if (p.response) log(`   resp: ${p.response}`);
+        if (p.error) log(`   err:  ${p.error}`);
+    });
+
+    // Injeta sniffer SEMPRE (no @run-at document-start), mas só processa se recording ON.
+    // Custo de ter o sniffer instalado sem processar = ~zero.
+    try { injectSniffer(); } catch (e) { console.error('[🏰 UpVillage] injectSniffer falhou:', e); }
+    // =====================================================================
 
     // Mover ALIASES pra cá (era declarado depois — causava TDZ na migração de config antiga)
     const ALIASES = {
@@ -159,6 +269,7 @@ console.log('[🏰 UpVillage] Script carregando...');
         return {
             enabled: false,
             debug: false,
+            recording: false,
             modules: {
                 quest: true,
                 construtor: false,
@@ -184,6 +295,7 @@ console.log('[🏰 UpVillage] Script carregando...');
         if (!raw) {
             const def = getDefaultConfig();
             debugEnabled = !!def.debug;
+            recordingEnabled = !!def.recording;
             return def;
         }
         try {
@@ -204,12 +316,14 @@ console.log('[🏰 UpVillage] Script carregando...');
             }
             if (!Array.isArray(merged.plan)) merged.plan = [];
             debugEnabled = !!merged.debug;
+            recordingEnabled = !!merged.recording;
             return merged;
         } catch (e) {
             // NÃO chama log() aqui — log → debugPush → getConfig = recursão infinita
             console.error('[🏰 UpVillage] Config corrompida, restaurando defaults.', e);
             const def = getDefaultConfig();
             debugEnabled = !!def.debug;
+            recordingEnabled = !!def.recording;
             return def;
         }
     }
@@ -217,6 +331,7 @@ console.log('[🏰 UpVillage] Script carregando...');
     function setConfig(cfg) {
         GM_setValue(STORAGE_KEY, JSON.stringify(cfg));
         debugEnabled = !!cfg.debug;
+        recordingEnabled = !!cfg.recording;
         log('Config salva.');
     }
 
@@ -337,6 +452,19 @@ console.log('[🏰 UpVillage] Script carregando...');
     }
 
     async function tryUpgrade(buildingType) {
+        // Tentativa 1: usar BuildingMain.upgrade() nativo do TW (se disponível na página)
+        try {
+            const bm = (typeof unsafeWindow !== 'undefined') ? unsafeWindow.BuildingMain : window.BuildingMain;
+            if (bm && typeof bm.upgrade === 'function') {
+                log(`tryUpgrade(${buildingType}) → usando BuildingMain.upgrade nativo`);
+                bm.upgrade(buildingType);
+                return { source: 'native', ok: true };
+            }
+        } catch (e) {
+            log(`BuildingMain.upgrade(${buildingType}) lançou: ${e.message}`);
+        }
+
+        // Tentativa 2: fetch direto pra API
         const url = buildUrl('main', { ajaxaction: 'upgrade_building', type: buildingType, h: game_data.csrf });
         const result = await twFetch(url, { method: 'POST' });
         log(`tryUpgrade(${buildingType}) → URL: ${url}`);
@@ -427,6 +555,10 @@ console.log('[🏰 UpVillage] Script carregando...');
                         <label style="margin-top:6px;display:inline-block;">
                             <input type="checkbox" id="${SCRIPT_ID}-debug" style="margin-right:6px;">
                             🐛 Enviar logs pro Discord (usa o webhook do notificacao)
+                        </label><br>
+                        <label style="margin-top:6px;display:inline-block;">
+                            <input type="checkbox" id="${SCRIPT_ID}-recording" style="margin-right:6px;">
+                            🎬 Modo Recording — captura toda chamada AJAX do TW (use junto com 🐛 pra ver no Discord)
                         </label>
                     </fieldset>
 
@@ -555,6 +687,7 @@ console.log('[🏰 UpVillage] Script carregando...');
         const cfg = getConfig();
         document.getElementById(`${SCRIPT_ID}-enabled`).checked = !!cfg.enabled;
         document.getElementById(`${SCRIPT_ID}-debug`).checked = !!cfg.debug;
+        document.getElementById(`${SCRIPT_ID}-recording`).checked = !!cfg.recording;
         document.getElementById(`${SCRIPT_ID}-mod-quest`).checked = !!cfg.modules.quest;
         document.getElementById(`${SCRIPT_ID}-mod-construtor`).checked = !!cfg.modules.construtor;
         document.getElementById(`${SCRIPT_ID}-queue-max`).value = cfg.queueMaxItems || 2;
@@ -566,6 +699,7 @@ console.log('[🏰 UpVillage] Script carregando...');
         return {
             enabled: document.getElementById(`${SCRIPT_ID}-enabled`).checked,
             debug: document.getElementById(`${SCRIPT_ID}-debug`).checked,
+            recording: document.getElementById(`${SCRIPT_ID}-recording`).checked,
             modules: {
                 quest: document.getElementById(`${SCRIPT_ID}-mod-quest`).checked,
                 construtor: document.getElementById(`${SCRIPT_ID}-mod-construtor`).checked,
