@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🏰 Up Village TW
 // @namespace    https://github.com/jvkuhn/kuhn-tw-scripts
-// @version      1.4.0
+// @version      1.5.0
 // @description  Automação de evolução de aldeia + recording mode (sniffer de rede) + uso de funções nativas do TW
 // @author       jvkuhn
 // @include      https://*.tribalwars.com.br/*
@@ -21,7 +21,117 @@ console.log('[🏰 UpVillage] Script carregando...');
     'use strict';
 
     const SCRIPT_ID = 'kuhn-village';
-    const SCRIPT_VERSION = '1.4.0';
+    const SCRIPT_VERSION = '1.5.0';
+
+    // =====================================================================
+    // TW ACTIONS CATALOG — auto-identifica ação capturada pela URL
+    // Baseado em padrões conhecidos de endpoints do Tribal Wars BR.
+    // Formato: [regex da URL, nome legível, categoria, extractor de resumo]
+    // =====================================================================
+    const TW_ACTIONS = [
+        // CONSTRUÇÃO
+        { re: /screen=main.*ajaxaction=upgrade_building/, name: 'Upar prédio', cat: '🏗️',
+          extract: (u, b) => {
+              const m = (b || '').match(/id=([^&]+)/);
+              return m ? `prédio: ${decodeURIComponent(m[1])}` : '';
+          }},
+        { re: /screen=main.*action=cancel.*mode=build/, name: 'Cancelar construção', cat: '🏗️',
+          extract: (u) => {
+              const m = u.match(/[?&]id=(\d+)/);
+              return m ? `ordem: ${m[1]}` : '';
+          }},
+        // MISSÕES
+        { re: /screen=new_quests.*ajax=quest_popup/, name: 'Abrir popup de missão', cat: '🎯', extract: () => '' },
+        { re: /screen=new_quests.*ajax=mark_opened/, name: 'Marcar missão como vista', cat: '🎯',
+          extract: (u, b) => {
+              const m = (b || '').match(/quest_id=(\d+)/);
+              return m ? `quest_id: ${m[1]}` : '';
+          }},
+        { re: /screen=new_quests.*ajax=claim_reward/, name: 'Resgatar recompensa', cat: '🎁',
+          extract: (u, b) => {
+              const m = (b || '').match(/reward_id=(\d+)/);
+              return m ? `reward_id: ${m[1]}` : '';
+          }},
+        { re: /screen=new_quests.*ajax=questline_complete/, name: 'Completar linha de missão', cat: '🎯',
+          extract: (u) => {
+              const m = u.match(/[?&]id=(\d+)/);
+              return m ? `questline: ${m[1]}` : '';
+          }},
+        // RECRUTAMENTO
+        { re: /screen=barracks.*ajaxaction=recruit/, name: 'Recrutar no Quartel', cat: '⚔️',
+          extract: (u, b) => {
+              const units = ['spear', 'sword', 'axe', 'archer'];
+              const parts = [];
+              for (const u2 of units) {
+                  const m = (b || '').match(new RegExp(`(?:units\\[)?${u2}(?:\\])?=(\\d+)`));
+                  if (m && m[1] !== '0') parts.push(`${u2}: ${m[1]}`);
+              }
+              return parts.join(', ');
+          }},
+        { re: /screen=stable.*ajaxaction=recruit/, name: 'Recrutar no Estábulo', cat: '🐎',
+          extract: (u, b) => {
+              const units = ['spy', 'light', 'marcher', 'heavy'];
+              const parts = [];
+              for (const u2 of units) {
+                  const m = (b || '').match(new RegExp(`(?:units\\[)?${u2}(?:\\])?=(\\d+)`));
+                  if (m && m[1] !== '0') parts.push(`${u2}: ${m[1]}`);
+              }
+              return parts.join(', ');
+          }},
+        { re: /screen=garage.*ajaxaction=recruit/, name: 'Recrutar na Oficina', cat: '🛠️',
+          extract: (u, b) => {
+              const units = ['ram', 'catapult'];
+              const parts = [];
+              for (const u2 of units) {
+                  const m = (b || '').match(new RegExp(`(?:units\\[)?${u2}(?:\\])?=(\\d+)`));
+                  if (m && m[1] !== '0') parts.push(`${u2}: ${m[1]}`);
+              }
+              return parts.join(', ');
+          }},
+        // PALADINO / ESTÁTUA
+        { re: /screen=statue.*ajaxaction=new_knight/, name: 'Recrutar Paladino', cat: '🛡️', extract: () => '' },
+        { re: /screen=statue.*ajaxaction=.*paladin.*/i, name: 'Ação Paladino', cat: '🛡️', extract: () => '' },
+        // COMANDOS
+        { re: /screen=place.*try=confirm/, name: 'Confirmar comando (envio)', cat: '🗡️',
+          extract: (u, b) => {
+              const m = (b || '').match(/(?:target|x|y)=([^&]+)/);
+              return m ? `destino: ${decodeURIComponent(m[1])}` : '';
+          }},
+        { re: /screen=place.*action=command/, name: 'Criar comando', cat: '🗡️', extract: () => '' },
+        // COLETA
+        { re: /screen=scavenge.*ajaxaction=start_scavenging/, name: 'Iniciar coleta', cat: '🌾',
+          extract: (u, b) => {
+              const m = (b || '').match(/squad_id=(\d+)/);
+              return m ? `squad: ${m[1]}` : '';
+          }},
+        { re: /screen=scavenge_api/, name: 'API Coleta', cat: '🌾', extract: () => '' },
+        // MERCADO
+        { re: /screen=market.*ajaxaction=trade_send/, name: 'Enviar mercadores', cat: '🛒', extract: () => '' },
+        { re: /screen=market.*ajaxaction=call/, name: 'Convocar recursos', cat: '🛒', extract: () => '' },
+        { re: /screen=market.*ajaxaction=other_offers_accept/, name: 'Aceitar oferta do mercado', cat: '🛒', extract: () => '' },
+        // SMITHY (Ferreiro) — pesquisa
+        { re: /screen=smith.*ajaxaction=research/, name: 'Pesquisar unidade', cat: '🔨', extract: () => '' },
+        // ACADEMIA — moedas/nobre
+        { re: /screen=snob.*ajaxaction=coin_mint/, name: 'Cunhar moedas', cat: '💰', extract: () => '' },
+        { re: /screen=snob.*ajaxaction=train/, name: 'Treinar nobre', cat: '👑', extract: () => '' },
+        // IGREJA
+        { re: /screen=church.*ajaxaction=move/, name: 'Mover igreja', cat: '⛪', extract: () => '' },
+        // REPORTS / GENÉRICOS
+        { re: /screen=api.*ajax=resources_schedule/, name: 'Schedule recursos (poll)', cat: '📊', extract: () => '' },
+        { re: /screen=report/, name: 'Relatório', cat: '📨', extract: () => '' },
+        { re: /screen=mail/, name: 'Mensagem', cat: '✉️', extract: () => '' },
+    ];
+
+    function identifyAction(url, body) {
+        for (const action of TW_ACTIONS) {
+            if (action.re.test(url)) {
+                const detail = action.extract(url, body || '');
+                return `${action.cat} ${action.name}${detail ? ` — ${detail}` : ''}`;
+            }
+        }
+        return null;
+    }
+    // =====================================================================
 
     // Flags globais — atualizadas ao ler/salvar config
     let debugEnabled = false;
@@ -51,14 +161,29 @@ console.log('[🏰 UpVillage] Script carregando...');
         W.__kuhnSniffPush = function (payload) {
             try {
                 snifEventsTotal++;
-                console.log('[🏰 UpVillage] sniff capturado. recordingEnabled =', recordingEnabled, 'payload:', payload);
                 if (!recordingEnabled) return;
                 snifEventsProcessed++;
                 updateButton();
                 const u = (payload.url || '').replace(/^https?:\/\/[^/]+/, '');
-                log(`📡 ${payload.kind.toUpperCase()} ${payload.method} ${u} → ${payload.status || '?'}`);
-                if (payload.body) log(`   body: ${payload.body}`);
-                if (payload.response) log(`   resp: ${payload.response}`);
+
+                // Auto-identificação via catálogo TW
+                const identified = identifyAction(u, payload.body);
+                const header = identified
+                    ? `📡 ${identified}  [${payload.status || '?'}]`
+                    : `📡 UNKNOWN ${payload.method} ${u} → ${payload.status || '?'}`;
+                log(header);
+
+                // Detalhes adicionais só pra ações conhecidas OU se usuário quer ver raw
+                if (!identified) {
+                    // Ação desconhecida — mostra detalhes pra eu poder adicionar ao catálogo
+                    if (payload.body) log(`   body: ${payload.body}`);
+                    if (payload.response) log(`   resp: ${payload.response.slice(0, 200)}`);
+                }
+                // Sempre conta ação desconhecida separadamente (pra painel depois)
+                if (!identified && typeof unsafeWindow !== 'undefined') {
+                    unsafeWindow.__kuhnUnknownActions = unsafeWindow.__kuhnUnknownActions || [];
+                    unsafeWindow.__kuhnUnknownActions.push({ url: u, method: payload.method, body: payload.body, response: payload.response && payload.response.slice(0, 200), t: payload.t });
+                }
             } catch (e) {
                 console.error('[🏰 UpVillage] sniff push erro:', e);
             }
