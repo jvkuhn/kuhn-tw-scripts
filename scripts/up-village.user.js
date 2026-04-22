@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🏰 Up Village TW
 // @namespace    https://github.com/jvkuhn/kuhn-tw-scripts
-// @version      1.2.0
+// @version      1.2.1
 // @description  Automação de evolução de aldeia em background — quest claim, construtor com plano visual (sem precisar de Premium AM)
 // @author       jvkuhn
 // @include      https://*.tribalwars.com.br/*
@@ -20,7 +20,7 @@ console.log('[🏰 UpVillage] Script carregando...');
     'use strict';
 
     const SCRIPT_ID = 'kuhn-village';
-    const SCRIPT_VERSION = '1.2.0';
+    const SCRIPT_VERSION = '1.2.1';
 
     const STORAGE_KEY = 'kuhn-village-config';
     const TICK_MS = 8000;
@@ -264,20 +264,40 @@ console.log('[🏰 UpVillage] Script carregando...');
         const html = await twFetch(buildUrl('new_quests'));
         if (typeof html !== 'string') return;
 
-        const ids = new Set();
-        const reA = /data-quest[-_]?id\s*=\s*["'](\d+)["']/gi;
-        const reB = /quest=(\d+)/g;
+        // Extrai quest IDs e questline IDs do HTML retornado
+        const questIds = new Set();
+        const questlineIds = new Set();
         let m;
-        while ((m = reA.exec(html)) !== null) ids.add(m[1]);
-        while ((m = reB.exec(html)) !== null) ids.add(m[1]);
-        if (ids.size === 0) {
-            log('Quest: nenhum ID encontrado.');
+        const reQuestData = /data-quest[-_]?id\s*=\s*["'](\d+)["']/gi;
+        const reQuestUrl = /[?&]quest=(\d+)/g;
+        const reQuestlineData = /data-questline[-_]?id\s*=\s*["'](\d+)["']/gi;
+        const reQuestlineUrl = /questline_complete[^"'\s]*[?&]id=(\d+)/gi;
+
+        while ((m = reQuestData.exec(html)) !== null) questIds.add(m[1]);
+        while ((m = reQuestUrl.exec(html)) !== null) questIds.add(m[1]);
+        while ((m = reQuestlineData.exec(html)) !== null) questlineIds.add(m[1]);
+        while ((m = reQuestlineUrl.exec(html)) !== null) questlineIds.add(m[1]);
+
+        // Fallback: se não achar questline ID, tenta id=1 (mais comum no início)
+        if (questlineIds.size === 0) questlineIds.add('1');
+
+        if (questIds.size === 0) {
+            log('Quest: nenhum ID de missão encontrado no HTML.');
             return;
         }
-        for (const id of ids) {
-            const url = buildUrl('api', { ajaxaction: 'quest_complete', quest: id, skip: 'false', h: game_data.csrf });
-            const result = await twFetch(url, { method: 'POST' });
-            log(`Quest ${id} claim →`, result ? 'OK' : 'FAIL');
+
+        // Passo 1: completa cada missão (quest_complete)
+        for (const id of questIds) {
+            const url = buildUrl('api', { ajaxaction: 'quest_complete', quest: id, skip: 'false' });
+            const r = await twFetch(url, { method: 'POST' });
+            log(`Quest ${id} complete →`, r === null ? 'FAIL' : 'OK');
+        }
+
+        // Passo 2: resgata recompensa de cada questline (questline_complete)
+        for (const id of questlineIds) {
+            const url = buildUrl('new_quests', { ajax: 'questline_complete', id: id });
+            const r = await twFetch(url, { method: 'POST' });
+            log(`Questline ${id} resgate →`, r === null ? 'FAIL' : 'OK');
         }
     }
 
